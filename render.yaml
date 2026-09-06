@@ -1,0 +1,51 @@
+services:
+  # Backend Web Service: Django REST Framework API (WSGI via Gunicorn)
+  - type: web
+    name: blood-mgmt-backend
+    runtime: python
+    buildCommand: "./build.sh"
+    startCommand: "gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 3 --threads 2"
+    plan: free
+    envVars:
+      - key: DEBUG
+        value: "False"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false # Set to Neon PostgreSQL connection string in Render Dashboard
+      - key: ALLOWED_HOSTS
+        sync: false # e.g. blood-mgmt-backend.onrender.com
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false # e.g. https://blood-mgmt-frontend.onrender.com
+      - key: CSRF_TRUSTED_ORIGINS
+        sync: false # e.g. https://blood-mgmt-frontend.onrender.com,https://blood-mgmt-backend.onrender.com
+      - key: EMAIL_BACKEND
+        value: "django.core.mail.backends.smtp.EmailBackend"
+      - key: EMAIL_HOST
+        value: "smtp.gmail.com"
+      - key: EMAIL_PORT
+        value: "587"
+      - key: EMAIL_USE_TLS
+        value: "True"
+      - key: EMAIL_USE_SSL
+        value: "False"
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false
+
+  # Frontend Web Service: TanStack Start / React UI (Node SSR Server)
+  - type: web
+    name: blood-mgmt-frontend
+    runtime: node
+    rootDir: frontend
+    buildCommand: "npm install && npm run build"
+    startCommand: "node .output/server/index.mjs"
+    plan: free
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false # Set to Render backend URL, e.g. https://blood-mgmt-backend.onrender.com
+      - key: NODE_VERSION
+        value: "20.18.0"

@@ -14,6 +14,7 @@ from .permissions import (
 )
 from .serializers import (
     BloodBankSerializer,
+    BloodBankPublicSerializer,
     BloodBankInputSerializer,
     BloodUnitSerializer,
     BloodUnitCreateSerializer,
@@ -30,7 +31,7 @@ from .services import get_bank_inventory_summary, get_all_banks_inventory_summar
 @extend_schema_view(
     get=extend_schema(
         summary="List Blood Banks",
-        description="Retrieve a list of blood banks. Super Admins see all banks; Blood Bank Admins see only their assigned bank.",
+        description="Retrieve a list of blood banks. Super Admins see all banks; Blood Bank Admins see only their assigned bank; Hospital Staff see active banks for target selection.",
         responses={200: BloodBankSerializer(many=True)},
         tags=["Blood Banks"],
     ),
@@ -48,6 +49,9 @@ class BloodBankListCreateView(generics.ListCreateAPIView):
     def get_serializer_class(self):
         if self.request.method == "POST":
             return BloodBankInputSerializer
+        user = self.request.user
+        if user and getattr(user, "role", None) == UserRole.HOSPITAL_STAFF:
+            return BloodBankPublicSerializer
         return BloodBankSerializer
 
     def get_queryset(self):
@@ -60,6 +64,8 @@ class BloodBankListCreateView(generics.ListCreateAPIView):
             qs = BloodBank.objects.all()
         elif user.role == UserRole.BLOOD_BANK_ADMIN:
             qs = BloodBank.objects.filter(admin=user)
+        elif user.role == UserRole.HOSPITAL_STAFF:
+            qs = BloodBank.objects.filter(is_active=True)
         else:
             qs = BloodBank.objects.none()
 
@@ -135,6 +141,9 @@ class BloodBankDetailView(generics.RetrieveUpdateDestroyAPIView):
     def get_serializer_class(self):
         if self.request.method in ["PUT", "PATCH"]:
             return BloodBankInputSerializer
+        user = self.request.user
+        if user and getattr(user, "role", None) == UserRole.HOSPITAL_STAFF:
+            return BloodBankPublicSerializer
         return BloodBankSerializer
 
     def check_permissions(self, request):

@@ -154,3 +154,70 @@ class Donor(models.Model):
     @property
     def is_eligible(self):
         return self.calculate_eligibility().get("is_eligible", False)
+
+
+class ContactRequestStatus(models.TextChoices):
+    PENDING = "PENDING", "Pending"
+    APPROVED = "APPROVED", "Approved"
+    DECLINED = "DECLINED", "Declined"
+
+
+class DonorContactRequest(models.Model):
+    """
+    Explicit donor consent request model.
+    Allows permitted users/organizations to request private contact details
+    from a donor. Only after explicit donor approval can private contact
+    information (phone, email, full address) be accessed by the requester.
+    """
+    requester = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="sent_donor_contact_requests",
+        help_text="User requesting access to donor contact details.",
+    )
+    donor = models.ForeignKey(
+        Donor,
+        on_delete=models.CASCADE,
+        related_name="contact_requests",
+        help_text="Target donor whose contact details are requested.",
+    )
+    reason = models.TextField(
+        help_text="Clinical or emergency justification for requesting donor contact.",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=ContactRequestStatus.choices,
+        default=ContactRequestStatus.PENDING,
+        help_text="Current consent status (PENDING, APPROVED, DECLINED).",
+    )
+    responded_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when the donor accepted or declined the request.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "donor_contact_requests"
+        verbose_name = "Donor Contact Request"
+        verbose_name_plural = "Donor Contact Requests"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["requester", "donor", "status"]),
+            models.Index(fields=["donor", "status"]),
+        ]
+
+    def __str__(self):
+        return f"Request #{self.id}: {self.requester.username} -> {self.donor.user.username} ({self.get_status_display()})"
+
+    def clean(self):
+        super().clean()
+        if self.reason is not None:
+            self.reason = self.reason.strip()
+        if not self.reason:
+            raise ValidationError({"reason": "A valid reason for requesting donor contact is required."})
+
+        if hasattr(self, "requester") and hasattr(self, "donor") and self.donor:
+            if self.requester_id == self.donor.user_id:
+                raise ValidationError({"donor": "You cannot submit a contact request to yourself."})

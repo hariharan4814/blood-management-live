@@ -162,3 +162,106 @@ class DonorEligibilityResponseSerializer(serializers.Serializer):
     is_eligible = serializers.BooleanField()
     criteria = EligibilityCriteriaSerializer()
     reasons = serializers.ListField(child=serializers.CharField())
+
+
+class DonorContactRequestSerializer(serializers.ModelSerializer):
+    """
+    Representation serializer for donor contact requests.
+    """
+    requester_id = serializers.ReadOnlyField(source="requester.id")
+    requester_username = serializers.ReadOnlyField(source="requester.username")
+    requester_name = serializers.SerializerMethodField()
+    requester_role = serializers.ReadOnlyField(source="requester.role")
+    donor_id = serializers.ReadOnlyField(source="donor.id")
+    donor_blood_group = serializers.ReadOnlyField(source="donor.blood_group")
+
+    class Meta:
+        from .models import DonorContactRequest
+        model = DonorContactRequest
+        fields = [
+            "id",
+            "requester_id",
+            "requester_username",
+            "requester_name",
+            "requester_role",
+            "donor_id",
+            "donor_blood_group",
+            "reason",
+            "status",
+            "responded_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_requester_name(self, obj) -> str:
+        name = f"{obj.requester.first_name} {obj.requester.last_name}".strip()
+        return name if name else obj.requester.username
+
+
+class DonorContactRequestCreateSerializer(serializers.Serializer):
+    """
+    Input serializer for submitting a new donor contact access request.
+    """
+    donor_id = serializers.IntegerField(required=True, help_text="ID of target Donor.")
+    reason = serializers.CharField(
+        required=True,
+        min_length=5,
+        help_text="Clinical justification or emergency need for accessing donor contact."
+    )
+
+    def validate_donor_id(self, value):
+        if not Donor.objects.filter(id=value).exists():
+            raise serializers.ValidationError("Designated donor profile does not exist.")
+        return value
+
+    def validate_reason(self, value):
+        if not value or not value.strip():
+            raise serializers.ValidationError("A non-empty reason is required.")
+        return value.strip()
+
+
+class DonorContactRequestRespondSerializer(serializers.Serializer):
+    """
+    Input serializer for donors to accept or decline a contact request.
+    """
+    status = serializers.ChoiceField(
+        choices=["APPROVED", "DECLINED"],
+        required=True,
+        help_text="Decision response: APPROVED or DECLINED."
+    )
+
+
+class DonorPrivateContactSerializer(serializers.ModelSerializer):
+    """
+    Consent-protected representation of a donor's private contact details.
+    Only disclosed when explicit approval has been granted to the requesting party.
+    """
+    user_id = serializers.ReadOnlyField(source="user.id")
+    username = serializers.ReadOnlyField(source="user.username")
+    full_name = serializers.SerializerMethodField()
+    email = serializers.ReadOnlyField(source="user.email")
+    phone = serializers.ReadOnlyField(source="user.phone")
+    address = serializers.ReadOnlyField(source="user.address")
+
+    class Meta:
+        model = Donor
+        fields = [
+            "id",
+            "user_id",
+            "username",
+            "full_name",
+            "email",
+            "phone",
+            "address",
+            "blood_group",
+            "latitude",
+            "longitude",
+            "is_eligible",
+        ]
+        read_only_fields = fields
+
+    def get_full_name(self, obj) -> str:
+        name = f"{obj.user.first_name} {obj.user.last_name}".strip()
+        return name if name else obj.user.username
+

@@ -46,6 +46,11 @@ class NearbyQueryParamSerializer(serializers.Serializer):
         default=True,
         help_text="Filter donors to only medically eligible individuals.",
     )
+    all_hospitals = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text="Return all registered hospitals regardless of radius.",
+    )
 
 
 class NearbyDonorSerializer(serializers.Serializer):

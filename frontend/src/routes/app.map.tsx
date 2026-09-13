@@ -10,10 +10,14 @@ import {
   Info,
   Loader2,
   LocateFixed,
+  Lock,
   MapPin,
   Navigation,
+  Phone,
   RefreshCw,
   Search,
+  Send,
+  Star,
   User,
   Users,
   XCircle,
@@ -24,6 +28,7 @@ import { SectionCard } from "@/components/common/SectionCard";
 import { EmptyState } from "@/components/common/StateBlocks";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { LeafletMap, type MapMarkerItem } from "@/components/map/LeafletMap";
+import { DonorContactModal } from "@/components/donors/DonorContactModal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -36,7 +41,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { BLOOD_GROUPS, type BloodGroup } from "@/lib/types";
+import { Switch } from "@/components/ui/switch";
+import { BLOOD_GROUPS } from "@/lib/types";
 import { useAuth } from "@/providers/AuthProvider";
 import {
   nearbyService,
@@ -51,14 +57,14 @@ import { profileService } from "@/services/profile/profileService";
 export const Route = createFileRoute("/app/map")({
   head: () => ({
     meta: [
-      { title: "Nearby Resources — Blood Management System" },
+      { title: "Map & Nearby Resources — Blood Management System" },
       {
         name: "description",
         content:
-          "Locate nearby blood banks, partner hospitals and compatible donors using OpenStreetMap and Leaflet.",
+          "Locate nearby blood banks, registered partner hospitals and compatible donors using OpenStreetMap and Leaflet.",
       },
-      { property: "og:title", content: "Nearby Resources — Blood Management System" },
-      { property: "og:description", content: "Locate nearby blood banks, hospitals and donors." },
+      { property: "og:title", content: "Map & Nearby Resources — Blood Management System" },
+      { property: "og:description", content: "Locate nearby blood banks, all registered hospitals and donors." },
       { name: "robots", content: "noindex" },
     ],
   }),
@@ -88,11 +94,6 @@ function NearbyMapPage() {
     };
   }, [location.search]);
 
-  const isStaffOrAdmin =
-    user?.role === "SUPER_ADMIN" ||
-    user?.role === "BLOOD_BANK_ADMIN" ||
-    user?.role === "HOSPITAL_STAFF";
-
   const [center, setCenter] = useState<[number, number]>(() => {
     if (searchParams.lat && searchParams.lng) {
       return [searchParams.lat, searchParams.lng];
@@ -103,15 +104,22 @@ function NearbyMapPage() {
   const [radius, setRadius] = useState<number>(() => searchParams.radius || 25);
   const [bloodGroup, setBloodGroup] = useState<string>(() => searchParams.blood_group || "ALL");
 
-  const [includeDonors, setIncludeDonors] = useState<boolean>(isStaffOrAdmin);
+  // All authenticated users can discover nearby donors
+  const [includeDonors, setIncludeDonors] = useState<boolean>(true);
   const [includeHospitals, setIncludeHospitals] = useState<boolean>(true);
   const [includeBloodBanks, setIncludeBloodBanks] = useState<boolean>(true);
+  const [allHospitalsMode, setAllHospitalsMode] = useState<boolean>(false);
 
+  const [searchFilter, setSearchFilter] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(true);
   const [geolocating, setGeolocating] = useState<boolean>(false);
   const [data, setData] = useState<NearbySearchResponse | null>(null);
   const [focusedMarkerId, setFocusedMarkerId] = useState<string | number | null>(null);
   const [userSavedLocationLoaded, setUserSavedLocationLoaded] = useState<boolean>(false);
+
+  // Contact Modal State
+  const [contactModalOpen, setContactModalOpen] = useState<boolean>(false);
+  const [selectedDonorForContact, setSelectedDonorForContact] = useState<{ id: number; bloodGroup: string } | null>(null);
 
   // Load user saved location on initial mount if not provided via search URL
   useEffect(() => {
@@ -137,7 +145,7 @@ function NearbyMapPage() {
     setLoading(true);
     try {
       const typesList: string[] = [];
-      if (includeDonors && isStaffOrAdmin) typesList.push("donors");
+      if (includeDonors) typesList.push("donors");
       if (includeHospitals) typesList.push("hospitals");
       if (includeBloodBanks) typesList.push("blood_banks");
 
@@ -146,16 +154,16 @@ function NearbyMapPage() {
         lng: center[1],
         radius,
         type: typesList.length > 0 ? typesList.join(",") : "none",
+        all_hospitals: allHospitalsMode,
       };
       if (bloodGroup !== "ALL") {
         queryParams.blood_group = bloodGroup;
       }
 
       const res = await nearbyService.searchNearby(queryParams);
-
       setData(res);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to load nearby resources.");
+      toast.error(err instanceof Error ? err.message : "Failed to load resources.");
     } finally {
       setLoading(false);
     }
@@ -165,7 +173,7 @@ function NearbyMapPage() {
     if (userSavedLocationLoaded) {
       fetchNearby();
     }
-  }, [center, radius, bloodGroup, includeDonors, includeHospitals, includeBloodBanks, userSavedLocationLoaded]);
+  }, [center, radius, bloodGroup, includeDonors, includeHospitals, includeBloodBanks, allHospitalsMode, userSavedLocationLoaded]);
 
   const handleUseCurrentLocation = () => {
     if (!navigator.geolocation) {
@@ -180,12 +188,17 @@ function NearbyMapPage() {
         setGeolocating(false);
         toast.success("Location set to your current GPS position.");
       },
-      (err) => {
+      () => {
         setGeolocating(false);
         toast.error("Location permission denied or unavailable.");
       },
       { enableHighAccuracy: true, timeout: 8000 }
     );
+  };
+
+  const handleOpenContactModal = (donorId: number, bloodGroupStr: string) => {
+    setSelectedDonorForContact({ id: donorId, bloodGroup: bloodGroupStr });
+    setContactModalOpen(true);
   };
 
   // Prepare map markers
@@ -205,26 +218,27 @@ function NearbyMapPage() {
     });
 
     if (data?.results) {
-      // Donors
+      // Donors (Sanitized discovery with fuzzed coordinates)
       if (includeDonors && data.results.donors) {
         data.results.donors.forEach((d) => {
           list.push({
             id: d.id,
             type: "donor",
-            title: `Donor #${d.donor_id}`,
+            title: `Donor #${d.donor_id} (${d.blood_group})`,
             latitude: d.approximate_latitude,
             longitude: d.approximate_longitude,
             distanceKm: d.distance_km,
             details: {
               bloodGroup: d.blood_group,
               isEligible: d.is_eligible,
+              address: "Approximate location (~1.1 km resolution). Contact details protected.",
             },
             onClick: () => setFocusedMarkerId(d.id),
           });
         });
       }
 
-      // Hospitals
+      // Hospitals (All registered or nearby)
       if (includeHospitals && data.results.hospitals) {
         data.results.hospitals.forEach((h) => {
           list.push({
@@ -274,11 +288,47 @@ function NearbyMapPage() {
     return list;
   }, [center, data, includeDonors, includeHospitals, includeBloodBanks]);
 
+  // Filtered lists for sidebar
+  const filteredDonors = useMemo(() => {
+    if (!data?.results?.donors) return [];
+    if (!searchFilter.trim()) return data.results.donors;
+    const term = searchFilter.toLowerCase();
+    return data.results.donors.filter(
+      (d) =>
+        d.blood_group.toLowerCase().includes(term) ||
+        `donor #${d.donor_id}`.toLowerCase().includes(term)
+    );
+  }, [data?.results?.donors, searchFilter]);
+
+  const filteredHospitals = useMemo(() => {
+    if (!data?.results?.hospitals) return [];
+    if (!searchFilter.trim()) return data.results.hospitals;
+    const term = searchFilter.toLowerCase();
+    return data.results.hospitals.filter(
+      (h) =>
+        h.name.toLowerCase().includes(term) ||
+        h.city.toLowerCase().includes(term) ||
+        h.state.toLowerCase().includes(term)
+    );
+  }, [data?.results?.hospitals, searchFilter]);
+
+  const filteredBloodBanks = useMemo(() => {
+    if (!data?.results?.blood_banks) return [];
+    if (!searchFilter.trim()) return data.results.blood_banks;
+    const term = searchFilter.toLowerCase();
+    return data.results.blood_banks.filter(
+      (b) =>
+        b.name.toLowerCase().includes(term) ||
+        b.city.toLowerCase().includes(term) ||
+        b.state.toLowerCase().includes(term)
+    );
+  }, [data?.results?.blood_banks, searchFilter]);
+
   return (
-    <DashboardLayout title="Nearby Resources">
+    <DashboardLayout title="Map & Resources">
       <PageHeader
-        title="Nearby Resources"
-        description="Explore nearby donors, hospitals, and blood banks on OpenStreetMap with radius filtering."
+        title="Interactive Map & Facilities"
+        description="Explore nearby donors, all registered partner hospitals, and blood banks on OpenStreetMap with Leaflet."
       />
 
       {/* Control Bar */}
@@ -319,26 +369,36 @@ function NearbyMapPage() {
             </div>
 
             {/* Blood Group Filter */}
-            {isStaffOrAdmin && (
-              <div className="flex items-center gap-2">
-                <Label htmlFor="bg-select" className="text-xs font-semibold text-muted-foreground whitespace-nowrap">
-                  Blood Group:
-                </Label>
-                <Select value={bloodGroup} onValueChange={setBloodGroup}>
-                  <SelectTrigger id="bg-select" className="w-24 h-8 text-xs font-bold text-primary">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ALL">All</SelectItem>
-                    {BLOOD_GROUPS.map((g) => (
-                      <SelectItem key={g} value={g}>
-                        {g}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
+            <div className="flex items-center gap-2">
+              <Label htmlFor="bg-select" className="text-xs font-semibold text-muted-foreground whitespace-nowrap">
+                Blood Group:
+              </Label>
+              <Select value={bloodGroup} onValueChange={setBloodGroup}>
+                <SelectTrigger id="bg-select" className="w-24 h-8 text-xs font-bold text-primary">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">All</SelectItem>
+                  {BLOOD_GROUPS.map((g) => (
+                    <SelectItem key={g} value={g}>
+                      {g}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* All Hospitals Toggle */}
+            <div className="flex items-center gap-2 pl-2 border-l border-border">
+              <Switch
+                id="all-hosp-toggle"
+                checked={allHospitalsMode}
+                onCheckedChange={setAllHospitalsMode}
+              />
+              <Label htmlFor="all-hosp-toggle" className="text-xs font-semibold cursor-pointer">
+                All Registered Hospitals
+              </Label>
+            </div>
           </div>
 
           {/* Refresh Button */}
@@ -355,34 +415,34 @@ function NearbyMapPage() {
         </div>
 
         {/* Entity Type Checkbox Filters */}
-        <div className="flex flex-wrap items-center gap-6 mt-4 pt-4 border-t border-border">
-          <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
-            <Filter className="size-3.5" /> Filter Entities:
-          </span>
-
-          <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
-            <Checkbox
-              checked={includeBloodBanks}
-              onCheckedChange={(checked) => setIncludeBloodBanks(Boolean(checked))}
-            />
-            <span className="inline-flex items-center gap-1.5">
-              <span className="size-2.5 rounded-full bg-emerald-600" />
-              Blood Banks ({data?.results.blood_banks.length ?? 0})
+        <div className="flex flex-wrap items-center justify-between gap-4 mt-4 pt-4 border-t border-border">
+          <div className="flex flex-wrap items-center gap-6">
+            <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+              <Filter className="size-3.5" /> Entities:
             </span>
-          </label>
 
-          <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
-            <Checkbox
-              checked={includeHospitals}
-              onCheckedChange={(checked) => setIncludeHospitals(Boolean(checked))}
-            />
-            <span className="inline-flex items-center gap-1.5">
-              <span className="size-2.5 rounded-full bg-blue-600" />
-              Hospitals ({data?.results.hospitals.length ?? 0})
-            </span>
-          </label>
+            <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
+              <Checkbox
+                checked={includeHospitals}
+                onCheckedChange={(checked) => setIncludeHospitals(Boolean(checked))}
+              />
+              <span className="inline-flex items-center gap-1.5">
+                <span className="size-2.5 rounded-full bg-blue-600" />
+                Hospitals ({data?.results.hospitals.length ?? 0})
+              </span>
+            </label>
 
-          {isStaffOrAdmin ? (
+            <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
+              <Checkbox
+                checked={includeBloodBanks}
+                onCheckedChange={(checked) => setIncludeBloodBanks(Boolean(checked))}
+              />
+              <span className="inline-flex items-center gap-1.5">
+                <span className="size-2.5 rounded-full bg-emerald-600" />
+                Blood Banks ({data?.results.blood_banks.length ?? 0})
+              </span>
+            </label>
+
             <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
               <Checkbox
                 checked={includeDonors}
@@ -390,15 +450,20 @@ function NearbyMapPage() {
               />
               <span className="inline-flex items-center gap-1.5">
                 <span className="size-2.5 rounded-full bg-rose-600" />
-                Donors ({data?.results.donors.length ?? 0})
+                Nearby Donors ({data?.results.donors.length ?? 0})
               </span>
             </label>
-          ) : (
-            <span className="text-xs text-muted-foreground flex items-center gap-1">
-              <Info className="size-3" />
-              Donor discovery restricted to medical staff
-            </span>
-          )}
+          </div>
+
+          <div className="relative w-full sm:w-64">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+            <Input
+              value={searchFilter}
+              onChange={(e) => setSearchFilter(e.target.value)}
+              placeholder="Search in results..."
+              className="h-8 text-xs pl-8"
+            />
+          </div>
         </div>
       </SectionCard>
 
@@ -410,8 +475,8 @@ function NearbyMapPage() {
             center={center}
             zoom={12}
             markers={markers}
-            radiusKm={radius}
-            height="h-[520px]"
+            radiusKm={allHospitalsMode ? null : radius}
+            height="h-[540px]"
             focusedMarkerId={focusedMarkerId}
           />
 
@@ -419,83 +484,54 @@ function NearbyMapPage() {
             <div className="flex items-center gap-4">
               <span className="inline-flex items-center gap-1.5">
                 <span className="size-2.5 rounded-full bg-indigo-600 ring-2 ring-indigo-300" />
-                Center
+                Search Center
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="size-2.5 rounded-full bg-blue-600" />
+                Hospital
               </span>
               <span className="inline-flex items-center gap-1.5">
                 <span className="size-2.5 rounded-full bg-emerald-600" />
                 Blood Bank
               </span>
               <span className="inline-flex items-center gap-1.5">
-                <span className="size-2.5 rounded-full bg-blue-600" />
-                Hospital
+                <span className="size-2.5 rounded-full bg-rose-600" />
+                Donor (~1.1km approx)
               </span>
-              {isStaffOrAdmin && (
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="size-2.5 rounded-full bg-rose-600" />
-                  Donor (~1.1km approximate)
-                </span>
-              )}
             </div>
-            <span>{radius} km radius search</span>
+            <span>{allHospitalsMode ? "Showing all registered hospitals" : `${radius} km radius search`}</span>
           </div>
         </div>
 
         {/* Results Sidebar Panel */}
-        <div className="space-y-4 max-h-[560px] overflow-y-auto pr-1">
+        <div className="space-y-4 max-h-[580px] overflow-y-auto pr-1">
           {loading ? (
             <div className="rounded-xl border border-border bg-card p-12 text-center">
               <Loader2 className="size-8 animate-spin text-primary mx-auto mb-3" />
-              <p className="text-sm font-medium">Scanning nearby coordinates...</p>
-              <p className="text-xs text-muted-foreground mt-1">Calculating distance via Haversine formula</p>
+              <p className="text-sm font-medium">Scanning coordinates...</p>
+              <p className="text-xs text-muted-foreground mt-1">Retrieving verified facilities and nearby donors</p>
             </div>
           ) : data?.total_count === 0 ? (
             <div className="rounded-xl border border-border bg-card p-8 text-center">
               <MapPin className="size-10 text-muted-foreground mx-auto mb-3 opacity-40" />
-              <h3 className="font-semibold text-sm">No resources within {radius} km</h3>
+              <h3 className="font-semibold text-sm">No resources found</h3>
               <p className="text-xs text-muted-foreground mt-1 mb-4">
-                Try expanding your search radius to 50 km or 100 km, or check your filter criteria.
+                Try expanding your search radius, toggling "All Registered Hospitals", or adjusting filters.
               </p>
-              <Button size="sm" variant="outline" onClick={() => setRadius(50)}>
-                Expand to 50 km
-              </Button>
+              <div className="flex justify-center gap-2">
+                <Button size="sm" variant="outline" onClick={() => setRadius(50)}>
+                  Expand to 50 km
+                </Button>
+                <Button size="sm" onClick={() => setAllHospitalsMode(true)}>
+                  Show All Hospitals
+                </Button>
+              </div>
             </div>
           ) : (
             <div className="space-y-3">
-              {/* Blood Banks List */}
-              {includeBloodBanks &&
-                data?.results.blood_banks.map((b) => (
-                  <div
-                    key={`bb-${b.id}`}
-                    onClick={() => setFocusedMarkerId(`bank-${b.id}`)}
-                    className={`rounded-xl border p-4 bg-card cursor-pointer transition-all hover:border-emerald-500 hover:shadow-sm ${
-                      focusedMarkerId === `bank-${b.id}` ? "border-emerald-600 ring-2 ring-emerald-500/20" : "border-border"
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="flex size-7 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400">
-                          <Building2 className="size-4" />
-                        </span>
-                        <div>
-                          <h4 className="font-bold text-sm leading-tight text-foreground">{b.name}</h4>
-                          <p className="text-xs text-muted-foreground">{b.city}, {b.state}</p>
-                        </div>
-                      </div>
-                      <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 text-xs font-bold shrink-0">
-                        {b.distance_km} km
-                      </Badge>
-                    </div>
-
-                    <div className="mt-3 flex flex-wrap items-center justify-between text-xs text-muted-foreground border-t border-border pt-2">
-                      <span>Capacity: {b.capacity} units</span>
-                      {b.contact_number && <span className="font-mono">📞 {b.contact_number}</span>}
-                    </div>
-                  </div>
-                ))}
-
               {/* Hospitals List */}
               {includeHospitals &&
-                data?.results.hospitals.map((h) => (
+                filteredHospitals.map((h) => (
                   <div
                     key={`hosp-${h.id}`}
                     onClick={() => setFocusedMarkerId(`hosp-${h.id}`)}
@@ -519,15 +555,28 @@ function NearbyMapPage() {
                     </div>
 
                     <div className="mt-3 flex flex-wrap items-center justify-between text-xs text-muted-foreground border-t border-border pt-2">
-                      <span>Beds: {h.beds}</span>
-                      {h.contact_number && <span className="font-mono">📞 {h.contact_number}</span>}
+                      <div className="flex items-center gap-3">
+                        <span>Beds: <strong className="text-foreground">{h.beds}</strong></span>
+                        {typeof h.rating === "number" && (
+                          <span className="flex items-center gap-1 text-amber-600 font-semibold">
+                            <Star className="size-3 fill-amber-400 text-amber-400" />
+                            {h.rating.toFixed(1)}
+                            <span className="text-muted-foreground font-normal">({h.review_count})</span>
+                          </span>
+                        )}
+                      </div>
+                      {h.contact_number && (
+                        <span className="font-mono flex items-center gap-1">
+                          <Phone className="size-3" /> {h.contact_number}
+                        </span>
+                      )}
                     </div>
                   </div>
                 ))}
 
               {/* Donors List */}
               {includeDonors &&
-                data?.results.donors.map((d) => (
+                filteredDonors.map((d) => (
                   <div
                     key={d.id}
                     onClick={() => setFocusedMarkerId(d.id)}
@@ -571,7 +620,55 @@ function NearbyMapPage() {
                           </>
                         )}
                       </span>
-                      <span className="text-[11px] text-muted-foreground italic">Approximate location</span>
+
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="h-7 text-xs gap-1 font-semibold"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleOpenContactModal(d.donor_id, d.blood_group);
+                        }}
+                      >
+                        <Lock className="size-3" />
+                        Request Contact
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+
+              {/* Blood Banks List */}
+              {includeBloodBanks &&
+                filteredBloodBanks.map((b) => (
+                  <div
+                    key={`bb-${b.id}`}
+                    onClick={() => setFocusedMarkerId(`bank-${b.id}`)}
+                    className={`rounded-xl border p-4 bg-card cursor-pointer transition-all hover:border-emerald-500 hover:shadow-sm ${
+                      focusedMarkerId === `bank-${b.id}` ? "border-emerald-600 ring-2 ring-emerald-500/20" : "border-border"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="flex size-7 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400">
+                          <Building2 className="size-4" />
+                        </span>
+                        <div>
+                          <h4 className="font-bold text-sm leading-tight text-foreground">{b.name}</h4>
+                          <p className="text-xs text-muted-foreground">{b.city}, {b.state}</p>
+                        </div>
+                      </div>
+                      <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 text-xs font-bold shrink-0">
+                        {b.distance_km} km
+                      </Badge>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap items-center justify-between text-xs text-muted-foreground border-t border-border pt-2">
+                      <span>Capacity: <strong className="text-foreground">{b.capacity} units</strong></span>
+                      {b.contact_number && (
+                        <span className="font-mono flex items-center gap-1">
+                          <Phone className="size-3" /> {b.contact_number}
+                        </span>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -579,6 +676,16 @@ function NearbyMapPage() {
           )}
         </div>
       </div>
+
+      {/* Donor Contact Consent Modal */}
+      {selectedDonorForContact && (
+        <DonorContactModal
+          open={contactModalOpen}
+          onOpenChange={setContactModalOpen}
+          donorId={selectedDonorForContact.id}
+          bloodGroup={selectedDonorForContact.bloodGroup}
+        />
+      )}
     </DashboardLayout>
   );
 }

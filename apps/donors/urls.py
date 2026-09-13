@@ -4,6 +4,9 @@ from .views import (
     DonorMeEligibilityView,
     DonorAdminListView,
     DonorAdminDetailView,
+    DonorContactRequestListCreateView,
+    DonorContactRequestRespondView,
+    DonorContactDetailsView,
 )
 
 app_name = "donors"
@@ -11,6 +14,10 @@ app_name = "donors"
 urlpatterns = [
     path("me/", DonorMeProfileView.as_view(), name="donor_me"),
     path("me/eligibility/", DonorMeEligibilityView.as_view(), name="donor_me_eligibility"),
+    path("contact-requests/", DonorContactRequestListCreateView.as_view(), name="donor_contact_requests"),
+    path("contact-requests/<int:pk>/respond/", DonorContactRequestRespondView.as_view(), name="donor_contact_request_respond"),
+    path("<int:pk>/contact-details/", DonorContactDetailsView.as_view(), name="donor_contact_details"),
     path("", DonorAdminListView.as_view(), name="donor_list"),
     path("<int:pk>/", DonorAdminDetailView.as_view(), name="donor_detail"),
 ]
+

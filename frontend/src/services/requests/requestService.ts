@@ -166,11 +166,7 @@ export const requestService = {
    * Fetch active blood banks for target selection in request form.
    */
   listBloodBanks: async (): Promise<BloodBankOption[]> => {
-    try {
-      const res = await request<{ results?: BloodBankOption[] } | BloodBankOption[]>("/api/blood-banks/");
-      return Array.isArray(res) ? res : res.results || [];
-    } catch {
-      return [];
-    }
+    const res = await request<{ results?: BloodBankOption[] } | BloodBankOption[]>("/api/blood-banks/");
+    return Array.isArray(res) ? res : res.results || [];
   },
 };

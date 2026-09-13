@@ -67,6 +67,7 @@ export interface NearbySearchParams {
   type?: string | undefined;
   blood_group?: string | undefined;
   only_eligible?: boolean | undefined;
+  all_hospitals?: boolean | undefined;
 }
 
 export interface BackendHospital {
@@ -96,6 +97,9 @@ export const nearbyService = {
     if (params.blood_group) query.set("blood_group", params.blood_group);
     if (params.only_eligible !== undefined) {
       query.set("only_eligible", params.only_eligible ? "true" : "false");
+    }
+    if (params.all_hospitals) {
+      query.set("all_hospitals", "true");
     }
 
     return request<NearbySearchResponse>(`/api/nearby/?${query.toString()}`);

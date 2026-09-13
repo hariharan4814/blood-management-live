@@ -20,11 +20,13 @@ from .nearby_serializers import (
     NearbySearchResultsSerializer,
 )
 
-# Roles permitted to query nearby voluntary donors
+# Roles permitted to query nearby voluntary donors (all authenticated platform roles)
 AUTHORIZED_DONOR_SEARCH_ROLES = {
     UserRole.SUPER_ADMIN,
     UserRole.BLOOD_BANK_ADMIN,
     UserRole.HOSPITAL_STAFF,
+    UserRole.LAB_TECHNICIAN,
+    UserRole.DONOR,
 }
 
 
@@ -33,7 +35,8 @@ class NearbySearchView(APIView):
     Unified Proximity Search API.
     Calculates great-circle distance (Haversine formula) to locate nearby
     Blood Banks, Hospitals, and eligible Donors within a user-defined radius.
-    Enforces privacy controls and strict role-based access for donor discovery.
+    Enforces privacy controls: exact residential address, phone, email, and full names are withheld,
+    with coordinates fuzzed to 2 decimal places for privacy.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -42,8 +45,8 @@ class NearbySearchView(APIView):
         description=(
             "Find nearby Blood Banks, Hospitals, and Donors within a given radius (km). "
             "Authoritative distance is computed on the backend using the Haversine formula. "
-            "Donor discovery is restricted to SUPER_ADMIN, BLOOD_BANK_ADMIN, and HOSPITAL_STAFF, "
-            "with coordinates fuzzed to 2 decimal places for privacy."
+            "Donor discovery is accessible to all authenticated users with privacy controls: "
+            "coordinates fuzzed to 2 decimal places and private contact info withheld."
         ),
         parameters=[
             OpenApiParameter("lat", float, description="Center latitude coordinate (-90 to 90)", required=True),
@@ -52,6 +55,7 @@ class NearbySearchView(APIView):
             OpenApiParameter("type", str, description="Types: 'all' or comma-separated 'donors,hospitals,blood_banks'", required=False),
             OpenApiParameter("blood_group", str, description="Optional blood group filter (e.g. O+, A-)", required=False),
             OpenApiParameter("only_eligible", bool, description="Only medically eligible donors (default true)", required=False),
+            OpenApiParameter("all_hospitals", bool, description="Return all registered hospitals regardless of radius", required=False),
         ],
         responses={
             200: NearbySearchResultsSerializer,
@@ -72,6 +76,7 @@ class NearbySearchView(APIView):
         type_param = validated.get("type", "all").strip().lower()
         blood_group_filter = validated.get("blood_group")
         only_eligible = validated.get("only_eligible", True)
+        all_hospitals = validated.get("all_hospitals", False)
 
         type_tokens = [t.strip() for t in type_param.split(",") if t.strip()]
         search_all = "all" in type_tokens or not type_tokens
@@ -83,20 +88,15 @@ class NearbySearchView(APIView):
         )
 
         user = request.user
-        can_view_donors = (
-            user.is_superuser
-            or user.is_super_admin
-            or user.role in AUTHORIZED_DONOR_SEARCH_ROLES
+        can_view_donors = bool(
+            user and user.is_authenticated and (
+                user.is_superuser
+                or user.is_super_admin
+                or user.role in AUTHORIZED_DONOR_SEARCH_ROLES
+            )
         )
 
-        # If user explicitly asked ONLY for donors but is unauthorized, return 403
-        if include_donors and not can_view_donors:
-            if type_tokens == ["donors"]:
-                return Response(
-                    {"detail": "Donor discovery is restricted to authorized clinical and administrative personnel."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-
+        # If unauthenticated, DRF permission_classes handles 401
         blood_banks_results = []
         hospitals_results = []
         donors_results = []
@@ -134,7 +134,7 @@ class NearbySearchView(APIView):
                     })
             blood_banks_results.sort(key=lambda x: x["distance_km"])
 
-        # 2. Hospitals
+        # 2. Hospitals (Support nearby or all registered hospitals)
         if include_hospitals:
             hospitals = Hospital.objects.filter(
                 is_active=True,
@@ -145,7 +145,7 @@ class NearbySearchView(APIView):
                 dist = calculate_haversine_distance_km(
                     center_lat, center_lng, hospital.latitude, hospital.longitude
                 )
-                if dist is not None and dist <= radius_km:
+                if all_hospitals or (dist is not None and dist <= radius_km):
                     avg_rating = hospital.reviews.filter(status=ReviewStatus.APPROVED).aggregate(Avg("rating"))["rating__avg"]
                     rating = round(float(avg_rating), 1) if avg_rating is not None else None
                     review_count = hospital.reviews.filter(status=ReviewStatus.APPROVED).count()
@@ -160,13 +160,13 @@ class NearbySearchView(APIView):
                         "beds": hospital.beds,
                         "latitude": float(hospital.latitude),
                         "longitude": float(hospital.longitude),
-                        "distance_km": round(dist, 2),
+                        "distance_km": round(dist, 2) if dist is not None else 0.0,
                         "rating": rating,
                         "review_count": review_count,
                     })
             hospitals_results.sort(key=lambda x: x["distance_km"])
 
-        # 3. Donors (with privacy protection)
+        # 3. Donors (with privacy protection for all authenticated users)
         if include_donors:
             if can_view_donors:
                 donor_qs = Donor.objects.select_related("user").filter(

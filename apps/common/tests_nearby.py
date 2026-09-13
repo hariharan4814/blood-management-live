@@ -239,24 +239,81 @@ class NearbyAPITests(APITestCase):
         self.assertNotIn("phone", donor_res)
         self.assertNotIn("address", donor_res)
 
-    def test_donor_role_cannot_discover_other_donors(self):
-        """9. Regular DONOR users cannot query other donors' locations."""
+    def test_all_authenticated_roles_can_discover_nearby_donors(self):
+        """9. DONOR, LAB_TECH, BLOOD_BANK_ADMIN, HOSPITAL_STAFF, SUPER_ADMIN can all view nearby donors safely."""
+        lab_tech = User.objects.create_user(
+            username="labtech_nearby",
+            email="labtech_nearby@test.com",
+            password="TechPassword123!",
+            role=UserRole.LAB_TECHNICIAN,
+        )
+
+        test_users = [
+            (self.donor_user1, "DONOR"),
+            (self.hospital_staff, "HOSPITAL_STAFF"),
+            (self.bank_admin, "BLOOD_BANK_ADMIN"),
+            (lab_tech, "LAB_TECHNICIAN"),
+            (self.super_admin, "SUPER_ADMIN"),
+        ]
+
+        for user, role_name in test_users:
+            self.client.force_authenticate(user=user)
+            res = self.client.get("/api/nearby/?lat=13.0827&lng=80.2707&radius=10&type=donors")
+            self.assertEqual(
+                res.status_code,
+                status.HTTP_200_OK,
+                f"Role {role_name} should be permitted to discover nearby donors with safe attributes."
+            )
+            donors = res.data["results"]["donors"]
+            self.assertTrue(len(donors) > 0)
+            donor_sample = donors[0]
+            # Verify privacy
+            self.assertNotIn("email", donor_sample)
+            self.assertNotIn("phone", donor_sample)
+            self.assertNotIn("address", donor_sample)
+            self.assertIn("approximate_latitude", donor_sample)
+            self.assertIn("approximate_longitude", donor_sample)
+
+    def test_all_registered_hospitals_map_support(self):
+        """10. Map can return all registered hospitals regardless of search radius center."""
+        # Create a distant hospital (e.g. 80km away)
+        distant_hospital = Hospital.objects.create(
+            name="Distant Apex Hospital",
+            city="Vellore",
+            state="Tamil Nadu",
+            address="Highway Junction",
+            contact_number="+91 416 222 0000",
+            email="apex@vellore.org",
+            beds=350,
+            latitude=Decimal("12.916500"),
+            longitude=Decimal("79.132500"),
+            is_active=True,
+        )
+
         self.client.force_authenticate(user=self.donor_user1)
 
-        # Asking for only donors returns 403 Forbidden
-        res_explicit = self.client.get("/api/nearby/?lat=13.08&lng=80.27&radius=10&type=donors")
-        self.assertEqual(res_explicit.status_code, status.HTTP_403_FORBIDDEN)
+        # Standard radius 10km does not include distant hospital
+        res_standard = self.client.get("/api/nearby/?lat=13.0827&lng=80.2707&radius=10&type=hospitals")
+        self.assertEqual(res_standard.status_code, status.HTTP_200_OK)
+        hosp_ids_standard = [h["id"] for h in res_standard.data["results"]["hospitals"]]
+        self.assertNotIn(distant_hospital.id, hosp_ids_standard)
 
-        # Asking for all returns blood banks and hospitals, but donors array is empty
-        res_all = self.client.get("/api/nearby/?lat=13.08&lng=80.27&radius=10&type=all")
+        # all_hospitals=true returns ALL registered active hospitals
+        res_all = self.client.get("/api/nearby/?lat=13.0827&lng=80.2707&radius=10&type=hospitals&all_hospitals=true")
         self.assertEqual(res_all.status_code, status.HTTP_200_OK)
-        self.assertEqual(res_all.data["results"]["donors"], [])
-        self.assertIn("donor_access_note", res_all.data)
-        self.assertTrue(len(res_all.data["results"]["blood_banks"]) > 0)
-        self.assertTrue(len(res_all.data["results"]["hospitals"]) > 0)
+        hosp_ids_all = [h["id"] for h in res_all.data["results"]["hospitals"]]
+        self.assertIn(self.hospital.id, hosp_ids_all)
+        self.assertIn(distant_hospital.id, hosp_ids_all)
+
+        # Ensure hospital response contains public fields but not staff credentials
+        sample_hosp = res_all.data["results"]["hospitals"][0]
+        self.assertIn("name", sample_hosp)
+        self.assertIn("beds", sample_hosp)
+        self.assertIn("contact_number", sample_hosp)
+        self.assertNotIn("password", sample_hosp)
 
     def test_profile_location_update_and_sync(self):
-        """10. User profile coordinates update and sync bidirectionally."""
+        """11. User profile coordinates update and sync bidirectionally."""
         self.client.force_authenticate(user=self.donor_user1)
         patch_data = {
             "latitude": "12.971600",

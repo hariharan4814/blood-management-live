@@ -411,13 +411,65 @@ class BloodBankAPITest(APITestCase):
         res4 = self.client.post("/api/blood-banks/", {"name": "Unauthorized Bank"}, format="json")
         self.assertEqual(res4.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_27_hospital_staff_rejected(self):
-        """Test 27: HOSPITAL_STAFF cannot perform blood bank administration."""
+    def test_27a_hospital_staff_can_list_active_blood_banks(self):
+        """Test 27a: HOSPITAL_STAFF can list active blood banks with safe public fields."""
         self.client.force_authenticate(user=self.hospital_staff)
         res = self.client.get("/api/blood-banks/")
-        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
-        res2 = self.client.post("/api/blood-banks/", {"name": "Hospital Bank"}, format="json")
-        self.assertEqual(res2.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        results = res.data.get("results", res.data)
+        self.assertEqual(len(results), 2)
+        bank_data = results[0]
+        self.assertIn("id", bank_data)
+        self.assertIn("name", bank_data)
+        self.assertIn("city", bank_data)
+        self.assertIn("state", bank_data)
+        self.assertIn("contact_number", bank_data)
+        # Verify sensitive administrative/inventory fields are excluded
+        self.assertNotIn("admin_email", bank_data)
+        self.assertNotIn("admin_username", bank_data)
+        self.assertNotIn("total_units_count", bank_data)
+        self.assertNotIn("capacity", bank_data)
+
+    def test_27b_hospital_staff_cannot_see_inactive_blood_banks(self):
+        """Test 27b: Inactive blood banks are excluded from Hospital Staff listing."""
+        inactive_bank = BloodBank.objects.create(
+            name="Inactive Reserve Bank",
+            city="Coimbatore",
+            state="Tamil Nadu",
+            contact_number="+91-9000000000",
+            email="inactive@bank.org",
+            capacity=100,
+            is_active=False,
+        )
+        self.client.force_authenticate(user=self.hospital_staff)
+        res = self.client.get("/api/blood-banks/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        results = res.data.get("results", res.data)
+        bank_ids = [b["id"] for b in results]
+        self.assertNotIn(inactive_bank.id, bank_ids)
+
+        # Direct detail GET of inactive bank is rejected with 403
+        res_detail = self.client.get(f"/api/blood-banks/{inactive_bank.id}/")
+        self.assertEqual(res_detail.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_27c_hospital_staff_cannot_create_modify_or_delete_blood_banks(self):
+        """Test 27c: HOSPITAL_STAFF is strictly forbidden from creating, updating, or deleting blood banks."""
+        self.client.force_authenticate(user=self.hospital_staff)
+        # Cannot POST
+        res_post = self.client.post("/api/blood-banks/", {"name": "Hospital Bank"}, format="json")
+        self.assertEqual(res_post.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Cannot PATCH
+        res_patch = self.client.patch(f"/api/blood-banks/{self.bank_1.id}/", {"capacity": 999}, format="json")
+        self.assertEqual(res_patch.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Cannot PUT
+        res_put = self.client.put(f"/api/blood-banks/{self.bank_1.id}/", {"name": "New Name"}, format="json")
+        self.assertEqual(res_put.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Cannot DELETE
+        res_del = self.client.delete(f"/api/blood-banks/{self.bank_1.id}/")
+        self.assertEqual(res_del.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_28_donor_rejected(self):
         """Test 28: DONOR cannot perform blood bank administration."""

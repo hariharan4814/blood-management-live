@@ -82,7 +82,9 @@ class AuthenticationAPITests(TestCase):
             "password": "SecurePassword123!",
             "password_confirm": "SecurePassword123!",
             "role": UserRole.HOSPITAL_STAFF,
-            "phone": "+1555666777"
+            "phone": "+1555666777",
+            "latitude": 13.0827,
+            "longitude": 80.2707,
         }
         response = self.client.post(self.register_url, payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -363,3 +365,178 @@ class UserManagementAPITests(TestCase):
         response = self.client.post(self.users_url, payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+
+class HospitalRegistrationAndLoginTests(TestCase):
+    """
+    Unit and integration tests for Requirement 1 & 2: Hospital Registration & Login.
+    """
+    def setUp(self):
+        self.client = APIClient()
+        self.register_url = reverse("accounts:register")
+        self.login_url = reverse("accounts:token_obtain_pair")
+
+    def test_hospital_registration_persists_facility_and_staff(self):
+        """Tests 1-5: Hospital registration saves facility, location, contact person and sets role HOSPITAL_STAFF."""
+        from apps.blood_requests.models import Hospital
+
+        payload = {
+            "hospital_name": "City Care Specialty Hospital",
+            "contact_person_name": "Dr. Sarah Johnson",
+            "email": "sarah.johnson@citycare.health",
+            "phone": "+91-9876543210",
+            "password": "SecureHospitalPass123!",
+            "password_confirm": "SecureHospitalPass123!",
+            "role": UserRole.HOSPITAL_STAFF,
+            "city": "Chennai",
+            "state": "Tamil Nadu",
+            "address": "45 Medical Park Road, Central District",
+            "latitude": 13.082700,
+            "longitude": 80.270700,
+        }
+        response = self.client.post(self.register_url, payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        # 1. User persisted
+        user = User.objects.filter(email="sarah.johnson@citycare.health").first()
+        self.assertIsNotNone(user)
+        self.assertEqual(user.role, UserRole.HOSPITAL_STAFF)
+        self.assertEqual(user.first_name, "Dr.")
+        self.assertEqual(user.last_name, "Sarah Johnson")
+        self.assertAlmostEqual(float(user.latitude), 13.0827, places=4)
+        self.assertAlmostEqual(float(user.longitude), 80.2707, places=4)
+
+        # 2. Hospital facility record persisted
+        hospital = Hospital.objects.filter(name="City Care Specialty Hospital").first()
+        self.assertIsNotNone(hospital)
+        self.assertEqual(hospital.city, "Chennai")
+        self.assertEqual(hospital.state, "Tamil Nadu")
+        self.assertEqual(hospital.contact_number, "+91-9876543210")
+        self.assertAlmostEqual(float(hospital.latitude), 13.0827, places=4)
+        self.assertAlmostEqual(float(hospital.longitude), 80.2707, places=4)
+        self.assertTrue(hospital.is_active)
+
+        # 3. Association verified
+        self.assertEqual(user.hospital, hospital)
+
+    def test_hospital_login_using_email_and_password_without_staff_id(self):
+        """Tests 6-7: Hospital can log in using Email + Password, Staff ID is not required."""
+        from apps.blood_requests.models import Hospital
+
+        hospital = Hospital.objects.create(
+            name="Metro Hospital",
+            city="Chennai",
+            is_active=True,
+        )
+        user = User.objects.create_user(
+            username="metro_staff",
+            email="desk@metrohospital.org",
+            password="MetroPassword123!",
+            role=UserRole.HOSPITAL_STAFF,
+            hospital=hospital,
+            is_verified=True,
+        )
+
+        login_payload = {
+            "username": "desk@metrohospital.org",  # Email used as login identifier
+            "password": "MetroPassword123!",
+        }
+        response = self.client.post(self.login_url, login_payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertIn("access", data)
+        self.assertIn("refresh", data)
+        self.assertEqual(data["user"]["role"], UserRole.HOSPITAL_STAFF)
+        self.assertEqual(data["user"]["email"], "desk@metrohospital.org")
+        self.assertEqual(data["user"]["hospital_name"], "Metro Hospital")
+
+    def test_hospital_registration_requires_latitude_and_longitude(self):
+        """Verify registration is rejected if either latitude or longitude is missing/null."""
+        payload_missing_lat = {
+            "hospital_name": "No Lat Hospital",
+            "contact_person_name": "Dr. Test",
+            "email": "nolat@hospital.test",
+            "password": "SecureHospitalPass123!",
+            "password_confirm": "SecureHospitalPass123!",
+            "role": UserRole.HOSPITAL_STAFF,
+            "longitude": 80.2707,
+        }
+        res_lat = self.client.post(self.register_url, payload_missing_lat, format="json")
+        self.assertEqual(res_lat.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("latitude", res_lat.json())
+
+        payload_missing_lng = {
+            "hospital_name": "No Lng Hospital",
+            "contact_person_name": "Dr. Test",
+            "email": "nolng@hospital.test",
+            "password": "SecureHospitalPass123!",
+            "password_confirm": "SecureHospitalPass123!",
+            "role": UserRole.HOSPITAL_STAFF,
+            "latitude": 13.0827,
+        }
+        res_lng = self.client.post(self.register_url, payload_missing_lng, format="json")
+        self.assertEqual(res_lng.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("longitude", res_lng.json())
+
+    def test_hospital_registration_invalid_coordinate_ranges(self):
+        """Verify registration is rejected if coordinates exceed valid geographic boundaries."""
+        payload_invalid_lat = {
+            "hospital_name": "Out of Range Hospital",
+            "contact_person_name": "Dr. Test",
+            "email": "range@hospital.test",
+            "password": "SecureHospitalPass123!",
+            "password_confirm": "SecureHospitalPass123!",
+            "role": UserRole.HOSPITAL_STAFF,
+            "latitude": 95.0,  # Invalid latitude (> 90)
+            "longitude": 80.2707,
+        }
+        res_lat = self.client.post(self.register_url, payload_invalid_lat, format="json")
+        self.assertEqual(res_lat.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("latitude", res_lat.json())
+
+        payload_invalid_lng = {
+            "hospital_name": "Out of Range Hospital",
+            "contact_person_name": "Dr. Test",
+            "email": "rangelng@hospital.test",
+            "password": "SecureHospitalPass123!",
+            "password_confirm": "SecureHospitalPass123!",
+            "role": UserRole.HOSPITAL_STAFF,
+            "latitude": 13.0827,
+            "longitude": 200.0,  # Invalid longitude (> 180)
+        }
+        res_lng = self.client.post(self.register_url, payload_invalid_lng, format="json")
+        self.assertEqual(res_lng.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("longitude", res_lng.json())
+
+    def test_hospital_registration_with_both_hospital_name_and_hospital_alias(self):
+        """Regression test: browser payload containing both hospital_name and hospital creates 1 Hospital and 1 User without TypeError."""
+        from apps.blood_requests.models import Hospital
+
+        payload = {
+            "name": "Dr. Harini",
+            "contact_person_name": "Dr. Harini",
+            "email": "harini@multispecialty.health",
+            "phone": "+91-9876500000",
+            "password": "SecureHospitalPass123!",
+            "password_confirm": "SecureHospitalPass123!",
+            "role": UserRole.HOSPITAL_STAFF,
+            "city": "Chennai",
+            "state": "Tamil Nadu",
+            "address": "123 Grand Trunk Road",
+            "hospital_name": "Harini Multi Specialty Hospital",
+            "hospital": "Harini Multi Specialty Hospital",
+            "latitude": 13.0827,
+            "longitude": 80.2707,
+        }
+        response = self.client.post(self.register_url, payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        # Verify exactly one hospital created
+        hospitals = Hospital.objects.filter(name="Harini Multi Specialty Hospital")
+        self.assertEqual(hospitals.count(), 1)
+        hospital_record = hospitals.first()
+
+        # Verify user created and linked
+        user = User.objects.filter(email="harini@multispecialty.health").first()
+        self.assertIsNotNone(user)
+        self.assertEqual(user.role, UserRole.HOSPITAL_STAFF)
+        self.assertEqual(user.hospital, hospital_record)

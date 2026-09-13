@@ -4,9 +4,10 @@ from apps.accounts.models import UserRole
 
 class IsSuperAdminOrAssignedBankAdmin(permissions.BasePermission):
     """
-    Permission for Blood Bank administrative access:
+    Permission for Blood Bank administrative and operational access:
     - SUPER_ADMIN: Full read/write access to all blood banks.
     - BLOOD_BANK_ADMIN: Read/write access only to their assigned blood bank. Cannot create new blood banks.
+    - HOSPITAL_STAFF: Read-only access (GET/HEAD/OPTIONS) to active blood banks for target facility selection.
     - Other roles: Denied access.
     """
     message = "You do not have permission to manage this blood bank."
@@ -25,6 +26,10 @@ class IsSuperAdminOrAssignedBankAdmin(permissions.BasePermission):
                 return False
             return True
 
+        if request.user.role == UserRole.HOSPITAL_STAFF:
+            # Hospital staff can only view active blood bank facilities to select a target for requests.
+            return request.method in permissions.SAFE_METHODS
+
         return False
 
     def has_object_permission(self, request, view, obj):
@@ -38,6 +43,12 @@ class IsSuperAdminOrAssignedBankAdmin(permissions.BasePermission):
             # Check if obj is BloodUnit
             if hasattr(obj, "blood_bank"):
                 return obj.blood_bank.admin_id == request.user.id
+
+        if request.user.role == UserRole.HOSPITAL_STAFF:
+            if request.method in permissions.SAFE_METHODS:
+                if hasattr(obj, "is_active"):
+                    return bool(obj.is_active)
+            return False
 
         return False
 

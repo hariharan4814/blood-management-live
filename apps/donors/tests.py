@@ -438,3 +438,164 @@ class DonorAPITests(TestCase):
         res = self.client.patch(self.me_url, {"blood_group": "XYZ+"}, format="json")
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("blood_group", res.data)
+
+
+class DonorContactConsentTests(TestCase):
+    """
+    Unit and integration tests for Requirement 4: Donor Contact Access & Privacy Consent.
+    """
+    def setUp(self):
+        self.client = APIClient()
+
+        # Donor user and profile
+        self.donor_user = User.objects.create_user(
+            username="voluntary_donor",
+            email="donor.private@example.com",
+            password="SecureDonorPass123!",
+            phone="+91-9876500001",
+            first_name="Priya",
+            last_name="Sharma",
+            address="12 Secret Lane, Chennai",
+            role=UserRole.DONOR,
+        )
+        self.donor = Donor.objects.create(
+            user=self.donor_user,
+            blood_group=BloodGroup.O_POSITIVE,
+            date_of_birth=timezone.now().date() - timezone.timedelta(days=26 * 365),
+            weight_kg=Decimal("58.00"),
+            latitude=Decimal("13.085000"),
+            longitude=Decimal("80.275000"),
+        )
+
+        # Requester 1 (Hospital Staff)
+        self.requester1 = User.objects.create_user(
+            username="hospital_requester_1",
+            email="staff1@hospital.org",
+            password="StaffPass123!",
+            role=UserRole.HOSPITAL_STAFF,
+        )
+
+        # Requester 2 (Another Staff user)
+        self.requester2 = User.objects.create_user(
+            username="hospital_requester_2",
+            email="staff2@hospital.org",
+            password="StaffPass123!",
+            role=UserRole.HOSPITAL_STAFF,
+        )
+
+        # Blood Bank Admin
+        self.bank_admin = User.objects.create_user(
+            username="bank_admin_consent",
+            email="admin@bank.org",
+            password="AdminPass123!",
+            role=UserRole.BLOOD_BANK_ADMIN,
+        )
+
+        # Super Admin
+        self.super_admin = User.objects.create_superuser(
+            username="super_admin_consent",
+            email="super@admin.org",
+            password="SuperPass123!",
+            role=UserRole.SUPER_ADMIN,
+        )
+
+        self.contact_requests_url = reverse("donors:donor_contact_requests")
+        self.contact_details_url = reverse("donors:donor_contact_details", kwargs={"pk": self.donor.id})
+
+    def test_contact_request_creation_and_notification(self):
+        """1. Permitted user creates contact request; in-app notification sent to donor."""
+        self.client.force_authenticate(user=self.requester1)
+        payload = {
+            "donor_id": self.donor.id,
+            "reason": "Emergency surgery patient requiring O+ blood urgently at Apollo Hospital.",
+        }
+        res = self.client.post(self.contact_requests_url, payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        req_id = res.data["id"]
+        self.assertEqual(res.data["status"], "PENDING")
+
+        # In-app notification created for the target donor
+        from apps.notifications.models import Notification
+        notif = Notification.objects.filter(recipient=self.donor_user).first()
+        self.assertIsNotNone(notif)
+        self.assertIn("New Donor Contact Request", notif.title)
+        self.assertIn("Emergency surgery", notif.message)
+
+    def test_pending_request_exposes_no_private_contact_info(self):
+        """2. PENDING request exposes no private contact information (returns 403)."""
+        from apps.donors.models import DonorContactRequest, ContactRequestStatus
+
+        DonorContactRequest.objects.create(
+            requester=self.requester1,
+            donor=self.donor,
+            reason="Blood reservation inquiry",
+            status=ContactRequestStatus.PENDING,
+        )
+
+        self.client.force_authenticate(user=self.requester1)
+        res = self.client.get(self.contact_details_url)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertNotIn("phone", str(res.data))
+        self.assertNotIn("email", str(res.data))
+
+    def test_declined_request_exposes_no_private_contact_info(self):
+        """3. DECLINED request exposes no private contact information (returns 403)."""
+        from apps.donors.models import DonorContactRequest, ContactRequestStatus
+
+        DonorContactRequest.objects.create(
+            requester=self.requester1,
+            donor=self.donor,
+            reason="Blood reservation inquiry",
+            status=ContactRequestStatus.DECLINED,
+        )
+
+        self.client.force_authenticate(user=self.requester1)
+        res = self.client.get(self.contact_details_url)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_approved_request_discloses_contact_info_only_to_approved_requester(self):
+        """4. APPROVED request exposes contact info to requester 1, but NOT to requester 2."""
+        from apps.donors.models import DonorContactRequest, ContactRequestStatus
+
+        # Create approved request for requester 1
+        contact_req = DonorContactRequest.objects.create(
+            requester=self.requester1,
+            donor=self.donor,
+            reason="Clinical need for pediatric unit",
+            status=ContactRequestStatus.PENDING,
+        )
+
+        # Donor approves the request
+        self.client.force_authenticate(user=self.donor_user)
+        respond_url = reverse("donors:donor_contact_request_respond", kwargs={"pk": contact_req.id})
+        res_respond = self.client.post(respond_url, {"status": "APPROVED"}, format="json")
+        self.assertEqual(res_respond.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_respond.data["status"], "APPROVED")
+
+        # Requester 1 can now access private contact details
+        self.client.force_authenticate(user=self.requester1)
+        res_details = self.client.get(self.contact_details_url)
+        self.assertEqual(res_details.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_details.data["phone"], "+91-9876500001")
+        self.assertEqual(res_details.data["email"], "donor.private@example.com")
+        self.assertEqual(res_details.data["full_name"], "Priya Sharma")
+        self.assertEqual(res_details.data["address"], "12 Secret Lane, Chennai")
+
+        # Requester 2 CANNOT access donor contact details
+        self.client.force_authenticate(user=self.requester2)
+        res_details_req2 = self.client.get(self.contact_details_url)
+        self.assertEqual(res_details_req2.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admins_cannot_bypass_donor_consent(self):
+        """5. Super Admin and Blood Bank Admin cannot bypass donor consent to read private details."""
+        # Without approved consent request:
+        # Super Admin denied
+        self.client.force_authenticate(user=self.super_admin)
+        res_super = self.client.get(self.contact_details_url)
+        self.assertEqual(res_super.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Blood Bank Admin denied
+        self.client.force_authenticate(user=self.bank_admin)
+        res_bank = self.client.get(self.contact_details_url)
+        self.assertEqual(res_bank.status_code, status.HTTP_403_FORBIDDEN)
+

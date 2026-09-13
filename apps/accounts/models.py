@@ -80,6 +80,14 @@ class User(AbstractUser):
         default="",
         help_text="Physical address or location description.",
     )
+    hospital = models.ForeignKey(
+        "blood_requests.Hospital",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="staff_members",
+        help_text="Associated hospital facility entity for Hospital Staff.",
+    )
 
     class Meta:
         db_table = "users"

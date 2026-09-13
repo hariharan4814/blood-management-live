@@ -91,13 +91,17 @@ function RequestsPage() {
   };
 
   const loadBloodBanks = async () => {
-    const banks = await requestService.listBloodBanks();
-    setBloodBanks(banks);
-    if (banks.length > 0) {
-      const firstBank = banks[0];
-      if (firstBank) {
-        setNewRequest((prev) => ({ ...prev, bloodBankId: String(firstBank.id) }));
+    try {
+      const banks = await requestService.listBloodBanks();
+      setBloodBanks(banks);
+      if (banks.length > 0) {
+        const firstBank = banks[0];
+        if (firstBank) {
+          setNewRequest((prev) => ({ ...prev, bloodBankId: String(firstBank.id) }));
+        }
       }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to load blood bank facilities.");
     }
   };
 
@@ -207,11 +211,17 @@ function RequestsPage() {
                           <SelectValue placeholder="Select target facility" />
                         </SelectTrigger>
                         <SelectContent>
-                          {bloodBanks.map((bank) => (
-                            <SelectItem key={bank.id} value={String(bank.id)}>
-                              {bank.name} ({bank.city}, {bank.state})
+                          {bloodBanks.length === 0 ? (
+                            <SelectItem value="none" disabled>
+                              No active blood banks available
                             </SelectItem>
-                          ))}
+                          ) : (
+                            bloodBanks.map((bank) => (
+                              <SelectItem key={bank.id} value={String(bank.id)}>
+                                {bank.name} ({bank.city}, {bank.state})
+                              </SelectItem>
+                            ))
+                          )}
                         </SelectContent>
                       </Select>
                     </div>

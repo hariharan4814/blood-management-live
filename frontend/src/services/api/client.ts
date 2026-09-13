@@ -75,7 +75,8 @@ async function doRefreshToken(): Promise<string | null> {
       return null;
     }
 
-    const data = (await res.json()) as { access: string; refresh?: string };
+    const text = await res.text();
+    const data = JSON.parse(text) as { access: string; refresh?: string };
     setTokens(data.access, data.refresh || refresh);
     return data.access;
   } catch {
@@ -143,24 +144,35 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
   }
 
-  // Handle successful response
+  // Handle successful response (safely read body stream exactly once)
   if (response.ok) {
     if (response.status === 204) {
       return {} as T;
     }
-    const contentType = response.headers.get("Content-Type") || "";
-    if (contentType.includes("application/json")) {
-      return (await response.json()) as T;
+    const rawText = await response.text().catch(() => "");
+    if (!rawText) {
+      return {} as T;
     }
-    return (await response.text()) as unknown as T;
+    try {
+      return JSON.parse(rawText) as T;
+    } catch {
+      return rawText as unknown as T;
+    }
   }
 
-  // Handle error response
+  // Handle error response (safely read body stream exactly once)
   let errorData: unknown = null;
   try {
-    errorData = await response.json();
+    const rawText = await response.text();
+    if (rawText) {
+      try {
+        errorData = JSON.parse(rawText);
+      } catch {
+        errorData = rawText;
+      }
+    }
   } catch {
-    errorData = await response.text();
+    errorData = null;
   }
 
   const errorMessage = parseErrorMessage(

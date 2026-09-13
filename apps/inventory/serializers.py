@@ -76,6 +76,25 @@ class BloodBankSerializer(serializers.ModelSerializer):
         return obj.reviews.filter(status=ReviewStatus.APPROVED).count()
 
 
+class BloodBankPublicSerializer(serializers.ModelSerializer):
+    """
+    Safe, minimal serializer for Hospital Staff to select active target facilities.
+    Excludes sensitive administrative credentials, internal metrics, and PII.
+    """
+    class Meta:
+        model = BloodBank
+        fields = [
+            "id",
+            "name",
+            "address",
+            "city",
+            "state",
+            "contact_number",
+            "is_active",
+        ]
+        read_only_fields = fields
+
+
 class BloodBankInputSerializer(serializers.ModelSerializer):
     """
     Serializer for creating and updating BloodBank records.

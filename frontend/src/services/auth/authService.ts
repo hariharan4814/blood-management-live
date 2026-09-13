@@ -33,7 +33,13 @@ export interface RegisterPayload {
   role: Extract<Role, "DONOR" | "HOSPITAL_STAFF">;
   blood_group?: string;
   city?: string;
+  state?: string;
+  address?: string;
+  hospital_name?: string;
   hospital?: string;
+  contact_person_name?: string;
+  latitude?: number | null;
+  longitude?: number | null;
   staffId?: string;
 }
 
@@ -64,7 +70,8 @@ function formatUser(rawUser: Record<string, unknown>): AuthUser {
   if (role === "DONOR") {
     organization = "Individual Donor";
   } else if (role === "HOSPITAL_STAFF") {
-    organization = "Hospital Staff Member";
+    const hospName = String(rawUser["hospital_name"] || "");
+    organization = hospName ? `${hospName}` : "Hospital Staff Member";
   } else if (role === "BLOOD_BANK_ADMIN") {
     organization = "Blood Bank Facility";
   } else if (role === "LAB_TECHNICIAN") {
@@ -136,6 +143,15 @@ export const authService = {
       role: payload.role,
       phone: payload.phone?.trim() || "",
       ...(payload.blood_group ? { blood_group: payload.blood_group } : {}),
+      ...(payload.contact_person_name ? { contact_person_name: payload.contact_person_name } : {}),
+      ...(payload.name ? { contact_person_name: payload.name } : {}),
+      ...(payload.hospital_name ? { hospital_name: payload.hospital_name } : {}),
+      ...(payload.hospital ? { hospital: payload.hospital } : {}),
+      ...(payload.city ? { city: payload.city } : {}),
+      ...(payload.state ? { state: payload.state } : {}),
+      ...(payload.address ? { address: payload.address } : {}),
+      ...(typeof payload.latitude === "number" ? { latitude: payload.latitude } : {}),
+      ...(typeof payload.longitude === "number" ? { longitude: payload.longitude } : {}),
     };
 
     const response = await request<{ message: string; user: Record<string, unknown> }>("/api/auth/register/", {

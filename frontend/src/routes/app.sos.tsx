@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { AlertCircle, Loader2, Radio, Siren, Users } from "lucide-react";
+import { AlertCircle, Building2, Loader2, Radio, ShieldCheck, Siren, Users } from "lucide-react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
-import { MapPlaceholder } from "@/components/common/MapPlaceholder";
+import { LeafletMap, type MapMarkerItem } from "@/components/map/LeafletMap";
 import { PageHeader } from "@/components/common/PageHeader";
 import { SectionCard } from "@/components/common/SectionCard";
 import { StatCard } from "@/components/common/StatCard";
@@ -26,6 +26,7 @@ import type { SosBroadcast } from "@/lib/types";
 import {
   sosService,
   type CriticalRequestOption,
+  type SOSDonorPreviewItem,
   type SosRecipientItem,
 } from "@/services/sos/sosService";
 
@@ -62,6 +63,10 @@ function SosPage() {
   const [cancelId, setCancelId] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState("");
 
+  const [previewDonors, setPreviewDonors] = useState<SOSDonorPreviewItem[]>([]);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
   const loadData = async () => {
     setLoading(true);
     try {
@@ -87,6 +92,45 @@ function SosPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  // Fetch read-only dynamic donor preview whenever selected request or radius changes
+  useEffect(() => {
+    if (!selectedRequestId) {
+      setPreviewDonors([]);
+      setPreviewError(null);
+      return;
+    }
+
+    let isCancelled = false;
+    setLoadingPreview(true);
+    setPreviewError(null);
+
+    const timer = setTimeout(() => {
+      sosService
+        .getDonorPreview(parseInt(selectedRequestId, 10), radius)
+        .then((res) => {
+          if (!isCancelled) {
+            setPreviewDonors(res.donors || []);
+          }
+        })
+        .catch((err) => {
+          if (!isCancelled) {
+            setPreviewError(err instanceof Error ? err.message : "Failed to load donor preview.");
+            setPreviewDonors([]);
+          }
+        })
+        .finally(() => {
+          if (!isCancelled) {
+            setLoadingPreview(false);
+          }
+        });
+    }, 200);
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(timer);
+    };
+  }, [selectedRequestId, radius]);
 
   const handleSelectBroadcast = async (broadcastId: string) => {
     setSelectedBroadcast(broadcastId);
@@ -146,6 +190,91 @@ function SosPage() {
   const totalNotified = broadcasts.reduce((s, b) => s + b.notified, 0);
 
   const selectedRequestObj = criticalRequests.find((r) => String(r.id) === selectedRequestId);
+
+  const DEFAULT_MAP_CENTER: [number, number] = [13.0827, 80.2707]; // Chennai default fallback
+
+  const mapCenter = useMemo<[number, number]>(() => {
+    if (selectedRequestObj) {
+      const lat =
+        selectedRequestObj.blood_bank_latitude != null
+          ? Number(selectedRequestObj.blood_bank_latitude)
+          : null;
+      const lng =
+        selectedRequestObj.blood_bank_longitude != null
+          ? Number(selectedRequestObj.blood_bank_longitude)
+          : null;
+      if (
+        lat != null &&
+        lng != null &&
+        !isNaN(lat) &&
+        !isNaN(lng) &&
+        (lat !== 0 || lng !== 0)
+      ) {
+        return [lat, lng];
+      }
+    }
+    return DEFAULT_MAP_CENTER;
+  }, [selectedRequestObj]);
+
+  const mapMarkers = useMemo<MapMarkerItem[]>(() => {
+    const list: MapMarkerItem[] = [];
+
+    // 1. Target facility marker
+    if (selectedRequestObj) {
+      const lat =
+        selectedRequestObj.blood_bank_latitude != null
+          ? Number(selectedRequestObj.blood_bank_latitude)
+          : null;
+      const lng =
+        selectedRequestObj.blood_bank_longitude != null
+          ? Number(selectedRequestObj.blood_bank_longitude)
+          : null;
+      if (
+        lat != null &&
+        lng != null &&
+        !isNaN(lat) &&
+        !isNaN(lng) &&
+        (lat !== 0 || lng !== 0)
+      ) {
+        list.push({
+          id: `request-bank-${selectedRequestObj.id}`,
+          type: "blood_bank",
+          title: selectedRequestObj.blood_bank_name || "Blood Bank Facility",
+          latitude: lat,
+          longitude: lng,
+          details: {
+            address: selectedRequestObj.blood_bank_address || undefined,
+            city: selectedRequestObj.blood_bank_city || undefined,
+          },
+        });
+      }
+    }
+
+    // 2. Compatible eligible donor preview markers (fuzzed coordinates for privacy, real calculated distance)
+    previewDonors.forEach((donor) => {
+      if (
+        donor.approximate_latitude != null &&
+        donor.approximate_longitude != null &&
+        !isNaN(donor.approximate_latitude) &&
+        !isNaN(donor.approximate_longitude)
+      ) {
+        list.push({
+          id: donor.id,
+          type: "donor",
+          title: `Eligible Donor #${donor.donor_id}`,
+          latitude: donor.approximate_latitude,
+          longitude: donor.approximate_longitude,
+          distanceKm: donor.distance_km != null ? donor.distance_km : undefined,
+          details: {
+            bloodGroup: donor.blood_group,
+            isEligible: donor.is_eligible,
+          },
+        });
+      }
+    });
+
+    return list;
+  }, [selectedRequestObj, previewDonors]);
 
   return (
     <DashboardLayout title="Emergency SOS">
@@ -209,9 +338,18 @@ function SosPage() {
                 value={[radius]}
                 onValueChange={([v]) => setRadius(v ?? radius)}
               />
-              <p className="text-xs text-muted-foreground">
-                Targeting donors within {radius} km of the facility coordinates.
-              </p>
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>Targeting donors within {radius} km of facility</span>
+                {loadingPreview ? (
+                  <span className="flex items-center gap-1 text-primary font-medium">
+                    <Loader2 className="size-3 animate-spin" /> Searching donors...
+                  </span>
+                ) : (
+                  <span className="font-semibold text-foreground">
+                    {previewDonors.length} compatible donor{previewDonors.length === 1 ? "" : "s"} in range
+                  </span>
+                )}
+              </div>
             </div>
 
             <Button
@@ -224,17 +362,59 @@ function SosPage() {
               ) : (
                 <Radio className="size-4" />
               )}
-              Broadcast SOS alert
+              Broadcast SOS alert {previewDonors.length > 0 ? `(${previewDonors.length} donors)` : ""}
             </Button>
           </div>
         </SectionCard>
 
-        <SectionCard title="Donor radius map" description="Geographic radius filter representation">
-          <MapPlaceholder
-            radiusKm={radius}
-            centerLabel="Blood Bank Facility"
-            markerCount={selectedRequestObj ? selectedRequestObj.units_needed : 0}
-          />
+        <SectionCard
+          title="Donor radius map"
+          description={`Geographic broadcast coverage (${radius} km radius from facility)`}
+        >
+          <div className="space-y-3">
+            <LeafletMap
+              center={mapCenter}
+              zoom={12}
+              radiusKm={radius}
+              markers={mapMarkers}
+              height="300px"
+              className="rounded-lg shadow-inner"
+            />
+            <div className="space-y-1.5 pt-1">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                <div className="flex items-center gap-1.5 font-medium text-foreground">
+                  <Building2 className="size-3.5 text-emerald-600" />
+                  <span>
+                    {selectedRequestObj
+                      ? `${selectedRequestObj.blood_bank_name}${selectedRequestObj.blood_bank_city ? ` (${selectedRequestObj.blood_bank_city})` : ""}`
+                      : "Default Center Anchor"}
+                  </span>
+                </div>
+                <span className="flex items-center gap-1 text-[11px]">
+                  <ShieldCheck className="size-3 text-emerald-600" />
+                  Donor coordinates fuzzed (~1.1 km) for privacy
+                </span>
+              </div>
+              <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground flex items-center justify-between">
+                {loadingPreview ? (
+                  <span className="flex items-center gap-1.5 text-primary">
+                    <Loader2 className="size-3.5 animate-spin" /> Searching for compatible donors in {radius} km radius...
+                  </span>
+                ) : previewError ? (
+                  <span className="text-destructive font-medium">Unable to preview donors: {previewError}</span>
+                ) : previewDonors.length === 0 ? (
+                  <span>No compatible donors found within {radius} km radius of facility.</span>
+                ) : (
+                  <span className="font-medium text-foreground">
+                    Preview: <span className="text-rose-600 font-bold">{previewDonors.length} compatible, eligible donor{previewDonors.length === 1 ? "" : "s"}</span> found within {radius} km.
+                  </span>
+                )}
+                <span className="text-[11px] text-muted-foreground">
+                  Group: <strong className="text-primary">{selectedRequestObj?.blood_group || "N/A"}</strong>
+                </span>
+              </div>
+            </div>
+          </div>
         </SectionCard>
       </div>
 
@@ -339,7 +519,9 @@ function SosPage() {
                   <TableRow key={r.id}>
                     <TableCell className="font-medium">{r.donorName}</TableCell>
                     <TableCell className="font-bold text-primary">{r.group}</TableCell>
-                    <TableCell>{r.distanceKm} km</TableCell>
+                    <TableCell>
+                      {typeof r.distanceKm === "number" ? `${r.distanceKm} km` : "Distance unavailable"}
+                    </TableCell>
                     <TableCell className="text-xs text-muted-foreground">{r.phone}</TableCell>
                     <TableCell>
                       <StatusBadge status={r.answer === "DELIVERED" ? "ACTIVE" : "PENDING"} />

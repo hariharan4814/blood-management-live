@@ -65,9 +65,9 @@ export function DonorSosAlert({ broadcast }: { broadcast: SosBroadcast }) {
               </dd>
             </div>
             <div>
-              <dt className="text-muted-foreground">Approx. distance</dt>
+              <dt className="text-muted-foreground">Search radius</dt>
               <dd className="flex items-center gap-1.5 font-medium">
-                <Clock className="size-4 text-muted-foreground" /> 4.2 km from you
+                <Clock className="size-4 text-muted-foreground" /> Within {broadcast.radiusKm ? `${broadcast.radiusKm} km` : "emergency radius"}
               </dd>
             </div>
           </dl>

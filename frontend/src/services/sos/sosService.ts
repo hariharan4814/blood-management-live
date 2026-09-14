@@ -8,6 +8,10 @@ export interface BackendSOSBroadcast {
     id: number;
     hospital_staff_username: string;
     blood_bank_name: string;
+    blood_bank_latitude?: number | string | null;
+    blood_bank_longitude?: number | string | null;
+    blood_bank_address?: string;
+    blood_bank_city?: string;
     blood_group: BloodGroup;
     units_needed: number;
     urgency: string;
@@ -36,6 +40,7 @@ export interface BackendSOSRecipient {
   donor: number;
   donor_username: string;
   donor_blood_group: BloodGroup;
+  distance_km: number | null;
   notification: number | null;
   email_attempted: boolean;
   email_sent: boolean;
@@ -51,13 +56,39 @@ export interface CriticalRequestOption {
   status: string;
   hospital_staff_username: string;
   blood_bank_name: string;
+  blood_bank_latitude?: number | string | null;
+  blood_bank_longitude?: number | string | null;
+  blood_bank_address?: string;
+  blood_bank_city?: string;
+  blood_bank_state?: string;
+}
+
+export interface SOSDonorPreviewItem {
+  id: string;
+  donor_id: number;
+  blood_group: BloodGroup;
+  is_eligible: boolean;
+  distance_km: number | null;
+  approximate_latitude: number | null;
+  approximate_longitude: number | null;
+}
+
+export interface SOSDonorPreviewResponse {
+  blood_request_id: number;
+  blood_group_requested: BloodGroup;
+  units_needed: number;
+  radius_km: number | null;
+  center_latitude: number | null;
+  center_longitude: number | null;
+  eligible_donors_count: number;
+  donors: SOSDonorPreviewItem[];
 }
 
 export interface SosRecipientItem {
   id: string;
   donorName: string;
   group: BloodGroup;
-  distanceKm: number;
+  distanceKm: number | null;
   phone: string;
   answer: "AVAILABLE" | "PENDING" | "SENT" | "DELIVERED";
 }
@@ -116,11 +147,11 @@ export const sosService = {
       >(`/api/sos/${rawId}/recipients/`);
       const list = Array.isArray(res) ? res : res.results || [];
 
-      return list.map((r, i) => ({
+      return list.map((r) => ({
         id: String(r.id),
         donorName: r.donor_username || `Eligible Donor #${r.donor}`,
         group: r.donor_blood_group,
-        distanceKm: Math.round(5 + (i * 3.7) % 25),
+        distanceKm: typeof r.distance_km === "number" ? r.distance_km : null,
         phone: "Contact via Email Notification",
         answer: r.email_sent ? "DELIVERED" : "SENT",
       }));
@@ -166,6 +197,19 @@ export const sosService = {
       method: "POST",
       body: JSON.stringify({ reason }),
     });
+  },
+
+  /**
+   * Preview eligible, compatible donors for a critical blood request within a geographic radius.
+   * Read-only preview: does not trigger broadcast, does not send notifications.
+   */
+  getDonorPreview: async (
+    requestId: number,
+    radiusKm: number,
+  ): Promise<SOSDonorPreviewResponse> => {
+    return await request<SOSDonorPreviewResponse>(
+      `/api/blood-requests/${requestId}/sos/preview/?radius_km=${radiusKm}`,
+    );
   },
 
   /**

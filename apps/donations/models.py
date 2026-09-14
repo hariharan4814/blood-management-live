@@ -172,6 +172,14 @@ class Donation(models.Model):
         related_name="donations",
         help_text="Optional donation camp where blood was collected (null for walk-ins).",
     )
+    blood_request = models.ForeignKey(
+        "blood_requests.BloodRequest",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="donations",
+        help_text="Associated Blood Request if this donation fulfilled a specific request.",
+    )
     blood_unit = models.OneToOneField(
         BloodUnit,
         on_delete=models.PROTECT,

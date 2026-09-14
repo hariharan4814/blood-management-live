@@ -8,6 +8,7 @@ export interface AuthUser {
   email: string;
   role: Role;
   phone?: string | null;
+  address?: string | null;
   is_verified?: boolean;
   first_name?: string;
   last_name?: string;
@@ -60,6 +61,7 @@ function formatUser(rawUser: Record<string, unknown>): AuthUser {
   const lastName = String(rawUser["last_name"] || "").trim();
   const username = String(rawUser["username"] || "");
   const email = String(rawUser["email"] || "");
+  const address = String(rawUser["address"] || "").trim();
 
   const name =
     firstName || lastName
@@ -71,13 +73,15 @@ function formatUser(rawUser: Record<string, unknown>): AuthUser {
     organization = "Individual Donor";
   } else if (role === "HOSPITAL_STAFF") {
     const hospName = String(rawUser["hospital_name"] || "");
-    organization = hospName ? `${hospName}` : "Hospital Staff Member";
+    organization = hospName ? `${hospName}` : (address || "Hospital Staff Member");
   } else if (role === "BLOOD_BANK_ADMIN") {
     organization = "Blood Bank Facility";
   } else if (role === "LAB_TECHNICIAN") {
     organization = "Testing & Quality Laboratory";
   } else if (role === "SUPER_ADMIN") {
     organization = "Platform Administration";
+  } else if (address) {
+    organization = address;
   }
 
   return {
@@ -86,6 +90,7 @@ function formatUser(rawUser: Record<string, unknown>): AuthUser {
     email,
     role,
     phone: (rawUser["phone"] as string) || null,
+    address: address || null,
     is_verified: Boolean(rawUser["is_verified"]),
     first_name: firstName,
     last_name: lastName,
@@ -137,11 +142,14 @@ export const authService = {
 
     const body: Record<string, unknown> = {
       username: generatedUsername,
+      name: payload.name?.trim() || "",
       email: payload.email.trim().toLowerCase(),
       password: payload.password,
       password_confirm: payload.password_confirm || payload.password,
       role: payload.role,
       phone: payload.phone?.trim() || "",
+      address: payload.hospital?.trim() || payload.city?.trim() || "",
+      hospital: payload.hospital?.trim() || "",
       ...(payload.blood_group ? { blood_group: payload.blood_group } : {}),
       ...(payload.contact_person_name ? { contact_person_name: payload.contact_person_name } : {}),
       ...(payload.name ? { contact_person_name: payload.name } : {}),

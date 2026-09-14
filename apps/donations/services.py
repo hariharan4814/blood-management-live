@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Optional
+from typing import Any, Optional
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -11,10 +11,12 @@ from apps.inventory.services import generate_unit_id, calculate_blood_unit_expir
 from .models import Donation, DonationCamp, CampStatus, DonationCampRegistration, CampRegistrationStatus
 
 
+@transaction.atomic
 def record_donation(
     donor: Donor,
     blood_bank: BloodBank,
     camp: Optional[DonationCamp] = None,
+    blood_request: Optional[Any] = None,
     donation_date: Optional[date] = None,
     created_by=None,
 ) -> Donation:
@@ -34,6 +36,9 @@ def record_donation(
 
     On any validation or database failure, rolls back all changes completely.
     """
+    # Serialize all collection paths for this donor, including different requests
+    # and walk-in donations. Re-read eligibility inputs after acquiring the lock.
+    donor = Donor.objects.select_for_update().get(pk=donor.pk)
     today = timezone.now().date()
     if donation_date is None:
         donation_date = today
@@ -84,6 +89,7 @@ def record_donation(
             donor=donor,
             blood_bank=blood_bank,
             camp=camp,
+            blood_request=blood_request,
             blood_unit=blood_unit,
             donation_date=donation_date,
             created_by=created_by,

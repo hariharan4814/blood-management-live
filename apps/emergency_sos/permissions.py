@@ -56,15 +56,19 @@ class CanManageSOSBroadcast(permissions.BasePermission):
         if request.user.is_superuser or request.user.role == UserRole.SUPER_ADMIN:
             return True
 
+        blood_request = obj if hasattr(obj, "hospital_staff") else getattr(obj, "blood_request", None)
+        if not blood_request:
+            return False
+
         # Check hospital staff ownership
         if request.user.role == UserRole.HOSPITAL_STAFF:
             return (
-                obj.triggered_by_id == request.user.id
-                or obj.blood_request.hospital_staff_id == request.user.id
+                getattr(obj, "triggered_by_id", None) == request.user.id
+                or blood_request.hospital_staff_id == request.user.id
             )
 
         # Check blood bank admin ownership
         if request.user.role == UserRole.BLOOD_BANK_ADMIN:
-            return obj.blood_request.blood_bank.admin_id == request.user.id
+            return blood_request.blood_bank.admin_id == request.user.id
 
         return False

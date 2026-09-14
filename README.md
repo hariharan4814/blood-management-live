@@ -87,7 +87,7 @@ The **Blood Management System** bridges the gap between voluntary donors, blood 
 
 ### 3. 📦 Blood Inventory & Traceability
 - Individual Blood Unit tracking with auto-generated unique identifiers (`BLD-YYYYMMDD-XXXX`).
-- Automated status lifecycle: `TESTING` $\rightarrow$ `AVAILABLE` $\rightarrow$ `RESERVED` $\rightarrow$ `TRANSFUSED` / `DISCARDED` / `EXPIRED`.
+- Automated status lifecycle: `TESTING` $\rightarrow$ `AVAILABLE` $\rightarrow$ `RESERVED` $\rightarrow$ `DISPATCHED` / `DISCARDED` (with strict 42-day RBC expiry validation).
 - Expiry date monitoring with visual low-stock alerts and quarantine isolation.
 
 ### 4. 🔬 Testing & Quality Control (Lab QC)

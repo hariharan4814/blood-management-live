@@ -31,6 +31,11 @@ class BloodRequestSerializer(serializers.ModelSerializer):
     hospital_staff_email = serializers.ReadOnlyField(source="hospital_staff.email")
     blood_bank_id = serializers.ReadOnlyField()
     blood_bank_name = serializers.ReadOnlyField(source="blood_bank.name")
+    blood_bank_latitude = serializers.DecimalField(source="blood_bank.latitude", max_digits=9, decimal_places=6, read_only=True)
+    blood_bank_longitude = serializers.DecimalField(source="blood_bank.longitude", max_digits=9, decimal_places=6, read_only=True)
+    blood_bank_address = serializers.CharField(source="blood_bank.address", read_only=True)
+    blood_bank_city = serializers.CharField(source="blood_bank.city", read_only=True)
+    blood_bank_state = serializers.CharField(source="blood_bank.state", read_only=True)
     urgency_display = serializers.CharField(source="get_urgency_display", read_only=True)
     status_display = serializers.CharField(source="get_status_display", read_only=True)
     approved_by_id = serializers.ReadOnlyField()
@@ -51,6 +56,11 @@ class BloodRequestSerializer(serializers.ModelSerializer):
             "blood_bank",
             "blood_bank_id",
             "blood_bank_name",
+            "blood_bank_latitude",
+            "blood_bank_longitude",
+            "blood_bank_address",
+            "blood_bank_city",
+            "blood_bank_state",
             "blood_group",
             "units_needed",
             "urgency",
@@ -73,6 +83,11 @@ class BloodRequestSerializer(serializers.ModelSerializer):
             "hospital_staff_email",
             "blood_bank_id",
             "blood_bank_name",
+            "blood_bank_latitude",
+            "blood_bank_longitude",
+            "blood_bank_address",
+            "blood_bank_city",
+            "blood_bank_state",
             "urgency_display",
             "status",
             "status_display",
@@ -197,4 +212,3 @@ class HospitalSerializer(serializers.ModelSerializer):
     def get_review_count(self, obj) -> int:
         from apps.common.models import ReviewStatus
         return obj.reviews.filter(status=ReviewStatus.APPROVED).count()
-

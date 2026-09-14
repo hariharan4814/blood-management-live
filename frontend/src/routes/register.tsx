@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Building2, Compass, Info, Loader2, LocateFixed, MapPin } from "lucide-react";
+import { Info, Loader2, LocateFixed, MapPin } from "lucide-react";
 import { toast } from "sonner";
 import { AuthLayout } from "@/components/layout/AuthLayout";
 import { Button } from "@/components/ui/button";
@@ -62,7 +62,7 @@ function RegisterPage() {
     longitude: DEFAULT_COORDS[1] as number | null,
   });
 
-  const [hasCustomLocation, setHasCustomLocation] = useState<boolean>(false);
+  const [, setHasCustomLocation] = useState<boolean>(false);
 
   const set = (key: keyof typeof form) => (value: unknown) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -125,6 +125,7 @@ function RegisterPage() {
         state: form.state.trim(),
         address: form.address.trim(),
         hospital_name: form.hospital.trim(),
+        hospital: form.hospital.trim(),
         latitude: form.latitude,
         longitude: form.longitude,
       });
@@ -132,7 +133,7 @@ function RegisterPage() {
       toast.success(
         role === "DONOR"
           ? "Donor account created successfully! You can sign in now."
-          : "Hospital registered successfully! You can sign in now."
+          : "Hospital registered successfully! You can sign in now.",
       );
       navigate({ to: "/login" });
     } catch (err: unknown) {

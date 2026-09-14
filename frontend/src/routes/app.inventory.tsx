@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { AlertTriangle, Droplets, PackageCheck, Search } from "lucide-react";
+import { AlertTriangle, Droplets, FlaskConical, PackageCheck, Plus, Search } from "lucide-react";
 import { toast } from "sonner";
 import { BloodGroupTile } from "@/components/common/BloodGroupTile";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -9,7 +9,18 @@ import { StatCard } from "@/components/common/StatCard";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { CardsSkeleton, EmptyState, TableSkeleton } from "@/components/common/StateBlocks";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -18,12 +29,22 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { BLOOD_GROUPS } from "@/lib/types";
+import { BLOOD_GROUPS, type BloodGroup } from "@/lib/types";
+import { useAuth } from "@/providers/AuthProvider";
+import { facilityService, type BloodBankFacility } from "@/services/facilities/facilityService";
 import {
   inventoryService,
   type BloodStock,
   type BloodUnitItem,
 } from "@/services/inventory/inventoryService";
+
+function getTodayDateString(): string {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 
 export const Route = createFileRoute("/app/inventory")({
   head: () => ({
@@ -42,10 +63,22 @@ export const Route = createFileRoute("/app/inventory")({
 });
 
 function InventoryPage() {
+  const { user } = useAuth();
+  const canAddUnit = user?.role === "SUPER_ADMIN" || user?.role === "BLOOD_BANK_ADMIN";
+
   const [stock, setStock] = useState<BloodStock[]>([]);
   const [units, setUnits] = useState<BloodUnitItem[]>([]);
   const [loadingStock, setLoadingStock] = useState(true);
   const [loadingUnits, setLoadingUnits] = useState(true);
+
+  // Add Blood Unit Modal State
+  const [addOpen, setAddOpen] = useState(false);
+  const [bloodBanks, setBloodBanks] = useState<BloodBankFacility[]>([]);
+  const [selectedBankId, setSelectedBankId] = useState<string>("");
+  const [selectedGroup, setSelectedGroup] = useState<BloodGroup>("O+");
+  const [collectionDate, setCollectionDate] = useState<string>(() => getTodayDateString());
+  const [unitId, setUnitId] = useState<string>("");
+  const [addingUnit, setAddingUnit] = useState(false);
 
   const [query, setQuery] = useState("");
   const [group, setGroup] = useState("ALL");
@@ -72,6 +105,67 @@ function InventoryPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    if (canAddUnit) {
+      facilityService
+        .getBloodBanks({ status: "active" })
+        .then((banks) => {
+          setBloodBanks(banks);
+          if (banks.length > 0 && !selectedBankId) {
+            const firstBank = banks[0];
+            if (firstBank) {
+              setSelectedBankId(String(firstBank.id));
+            }
+          }
+        })
+        .catch(() => {
+          // fallback
+        });
+    }
+  }, [canAddUnit]);
+
+  const handleAddUnit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedBankId) {
+      toast.error("Please select a blood bank facility.");
+      return;
+    }
+    if (!selectedGroup) {
+      toast.error("Please select a blood group.");
+      return;
+    }
+    if (!collectionDate) {
+      toast.error("Please provide a collection date.");
+      return;
+    }
+    const todayStr = getTodayDateString();
+    if (collectionDate > todayStr) {
+      toast.error("Collection date cannot be in the future.");
+      return;
+    }
+
+    setAddingUnit(true);
+    try {
+      const newUnit = await inventoryService.createUnit({
+        blood_bank: Number(selectedBankId),
+        blood_group: selectedGroup,
+        collection_date: collectionDate,
+        unit_id: unitId.trim() || undefined,
+      });
+      toast.success(
+        `Blood unit ${newUnit.unit_id} registered successfully and queued for laboratory testing (Status: TESTING).`,
+      );
+      setAddOpen(false);
+      setUnitId("");
+      setCollectionDate(getTodayDateString());
+      loadData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to create blood unit.");
+    } finally {
+      setAddingUnit(false);
+    }
+  };
 
   const filtered = useMemo(
     () =>
@@ -100,6 +194,113 @@ function InventoryPage() {
       <PageHeader
         title="Blood inventory"
         description="Group-wise stock levels, safety thresholds, and individual unit traceability."
+        actions={
+          canAddUnit ? (
+            <Dialog open={addOpen} onOpenChange={setAddOpen}>
+              <DialogTrigger asChild>
+                <Button size="sm">
+                  <Plus className="mr-2 size-4" /> Add Blood Unit
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-md">
+                <form onSubmit={handleAddUnit}>
+                  <DialogHeader>
+                    <DialogTitle>Add blood unit</DialogTitle>
+                    <DialogDescription>
+                      Register a newly collected blood unit. Units enter the laboratory quality testing queue in TESTING status.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-4 py-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="unit-bank">Blood Bank Facility</Label>
+                      <Select
+                        value={selectedBankId}
+                        onValueChange={setSelectedBankId}
+                        disabled={bloodBanks.length <= 1 && user?.role === "BLOOD_BANK_ADMIN"}
+                      >
+                        <SelectTrigger id="unit-bank">
+                          <SelectValue placeholder="Select Blood Bank" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {bloodBanks.map((b) => (
+                            <SelectItem key={b.id} value={String(b.id)}>
+                              {b.name} ({b.city}, {b.state})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="unit-group">Blood Group</Label>
+                      <Select
+                        value={selectedGroup}
+                        onValueChange={(val) => setSelectedGroup(val as BloodGroup)}
+                      >
+                        <SelectTrigger id="unit-group">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {BLOOD_GROUPS.map((g) => (
+                            <SelectItem key={g} value={g}>
+                              {g}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="unit-date">Collection Date</Label>
+                      <Input
+                        id="unit-date"
+                        type="date"
+                        max={new Date().toISOString().split("T")[0]}
+                        value={collectionDate}
+                        onChange={(e) => setCollectionDate(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="unit-id">Unit Identifier (Optional)</Label>
+                      <Input
+                        id="unit-id"
+                        placeholder="e.g. BU-20260914-001 (auto-generated if empty)"
+                        value={unitId}
+                        onChange={(e) => setUnitId(e.target.value)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Leave blank to auto-generate a unique system identifier.
+                      </p>
+                    </div>
+                    <div className="rounded-lg border bg-muted/40 p-3 text-xs text-muted-foreground space-y-1">
+                      <div className="flex items-center font-medium text-foreground">
+                        <FlaskConical className="mr-1.5 size-3.5 text-primary" />
+                        Quality Assurance & Expiry
+                      </div>
+                      <p>
+                        • Initial status is strictly set to <strong>TESTING</strong> until cleared by Lab Technician screening.
+                      </p>
+                      <p>
+                        • Expiry date is automatically calculated as <strong>Collection Date + 42 days</strong>.
+                      </p>
+                    </div>
+                  </div>
+                  <DialogFooter>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setAddOpen(false)}
+                    >
+                      Cancel
+                    </Button>
+                    <Button type="submit" disabled={addingUnit}>
+                      {addingUnit ? "Registering..." : "Add Blood Unit"}
+                    </Button>
+                  </DialogFooter>
+                </form>
+              </DialogContent>
+            </Dialog>
+          ) : undefined
+        }
       />
 
       {loadingStock ? (
@@ -177,11 +378,12 @@ function InventoryPage() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {["ALL", "TESTING", "AVAILABLE", "RESERVED", "DISPATCHED", "DISCARDED"].map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {s === "ALL" ? "All statuses" : s}
-                  </SelectItem>
-                ))}
+                <SelectItem value="ALL">All statuses</SelectItem>
+                <SelectItem value="TESTING">Testing</SelectItem>
+                <SelectItem value="AVAILABLE">Available</SelectItem>
+                <SelectItem value="RESERVED">Reserved</SelectItem>
+                <SelectItem value="DISPATCHED">Dispatched</SelectItem>
+                <SelectItem value="DISCARDED">Discarded</SelectItem>
               </SelectContent>
             </Select>
           </div>

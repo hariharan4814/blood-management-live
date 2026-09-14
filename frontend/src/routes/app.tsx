@@ -20,7 +20,7 @@ const ROUTE_PERMISSIONS: Record<string, Role[]> = {
   "/app/inventory": ["SUPER_ADMIN", "BLOOD_BANK_ADMIN"],
   "/app/donors": ["SUPER_ADMIN", "BLOOD_BANK_ADMIN"],
   "/app/sos": ["SUPER_ADMIN", "BLOOD_BANK_ADMIN"],
-  "/app/requests": ["SUPER_ADMIN", "BLOOD_BANK_ADMIN", "HOSPITAL_STAFF"],
+  "/app/requests": ["SUPER_ADMIN", "BLOOD_BANK_ADMIN", "HOSPITAL_STAFF", "DONOR"],
   "/app/request-history": ["SUPER_ADMIN", "HOSPITAL_STAFF"],
   "/app/tests": ["SUPER_ADMIN", "LAB_TECHNICIAN", "BLOOD_BANK_ADMIN"],
   "/app/test-history": ["SUPER_ADMIN", "LAB_TECHNICIAN", "BLOOD_BANK_ADMIN"],

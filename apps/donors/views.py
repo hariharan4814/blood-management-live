@@ -5,9 +5,9 @@ from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiResponse
 
 from apps.accounts.models import UserRole
-from apps.accounts.permissions import IsDonor, IsSuperAdmin, HasRoles
-from apps.notifications.services import create_notification
+from apps.accounts.permissions import IsDonor, HasRoles
 from apps.notifications.models import NotificationType
+from apps.notifications.services import create_notification
 from .models import Donor, BloodGroup, DonorContactRequest, ContactRequestStatus
 from .serializers import (
     DonorProfileSerializer,
@@ -66,7 +66,7 @@ class DonorMeProfileView(APIView):
                 {"detail": "Donor profile not found. Please complete your donor profile."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        serializer = DonorProfileSerializer(donor)
+        serializer = DonorProfileSerializer(donor, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def put(self, request):
@@ -88,14 +88,6 @@ class DonorMeProfileView(APIView):
         is_new = donor is None
 
         save_data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
-        if is_new:
-            if not save_data.get("blood_group"):
-                save_data["blood_group"] = BloodGroup.O_POSITIVE
-            if not save_data.get("date_of_birth"):
-                save_data["date_of_birth"] = "2000-01-01"
-            if not save_data.get("weight_kg"):
-                save_data["weight_kg"] = "60.00"
-
         serializer = DonorProfileInputSerializer(
             instance=donor,
             data=save_data,
@@ -110,7 +102,7 @@ class DonorMeProfileView(APIView):
             donor = serializer.save()
             res_status = status.HTTP_200_OK
 
-        return Response(DonorProfileSerializer(donor).data, status=res_status)
+        return Response(DonorProfileSerializer(donor, context={"request": request}).data, status=res_status)
 
 
 @extend_schema_view(
@@ -186,7 +178,7 @@ class DonorAdminDetailView(generics.RetrieveAPIView):
 
 
 # ========================================================
-# DONOR CONTACT CONSENT & PRIVACY VIEWS
+# PRIVACY-PRESERVING DONOR CONTACT CONSENT & ACCESS VIEWS
 # ========================================================
 
 @extend_schema_view(
@@ -198,11 +190,13 @@ class DonorAdminDetailView(generics.RetrieveAPIView):
     ),
     post=extend_schema(
         summary="Request Donor Contact Access",
-        description="Submit an explicit contact request to a donor. Generates an in-app notification to the donor.",
+        description="Hospital Staff, Blood Bank Admin, or Super Admin creates a contact access request for a specific nearby donor.",
         request=DonorContactRequestCreateSerializer,
         responses={
             201: DonorContactRequestSerializer,
             400: OpenApiResponse(description="Validation error or self-request."),
+            403: OpenApiResponse(description="Unauthorized role."),
+            404: OpenApiResponse(description="Donor not found."),
         },
         tags=["Donor Contact Consent"],
     ),
@@ -217,36 +211,42 @@ class DonorContactRequestListCreateView(APIView):
         user = request.user
         role_filter = request.query_params.get("view_as")
 
-        # Check if user has a donor profile
-        donor_profile = Donor.objects.filter(user=user).first()
+        donor_profile = getattr(user, "donor_profile", None) or Donor.objects.filter(user=user).first()
 
-        if donor_profile and role_filter != "requester":
-            # Return requests received by this donor
+        if donor_profile and role_filter != "requester" and (user.role == UserRole.DONOR or role_filter == "donor"):
             requests_qs = DonorContactRequest.objects.filter(donor=donor_profile)
+        elif user.is_super_admin or user.is_superuser:
+            requests_qs = DonorContactRequest.objects.all()
         else:
-            # Return requests sent by this user
             requests_qs = DonorContactRequest.objects.filter(requester=user)
 
         status_param = request.query_params.get("status")
         if status_param:
             requests_qs = requests_qs.filter(status__iexact=status_param)
 
-        requests_qs = requests_qs.select_related("requester", "donor__user").order_by("-created_at")
-        serializer = DonorContactRequestSerializer(requests_qs, many=True)
+        requests_qs = requests_qs.select_related("donor__user", "requester", "blood_request", "donation").order_by("-created_at")
+        serializer = DonorContactRequestSerializer(requests_qs, many=True, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
-        serializer = DonorContactRequestCreateSerializer(data=request.data)
+        user = request.user
+        allowed_roles = {UserRole.HOSPITAL_STAFF, UserRole.BLOOD_BANK_ADMIN, UserRole.SUPER_ADMIN}
+        if not (user.role in allowed_roles or user.is_super_admin or user.is_superuser):
+            return Response(
+                {"detail": "Only Hospital Staff, Blood Bank Administrators, and Super Administrators can request donor contact access."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = DonorContactRequestCreateSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
+        validated = serializer.validated_data
 
-        donor_id = serializer.validated_data["donor_id"]
-        reason = serializer.validated_data["reason"]
+        donor_id = validated["donor_id"]
         donor = Donor.objects.select_related("user").filter(id=donor_id).first()
-
         if not donor:
             return Response({"detail": "Donor not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if donor.user_id == request.user.id:
+        if donor.user_id == user.id:
             return Response(
                 {"detail": "You cannot request contact details for your own donor profile."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -254,7 +254,7 @@ class DonorContactRequestListCreateView(APIView):
 
         # Check for existing pending request
         existing = DonorContactRequest.objects.filter(
-            requester=request.user,
+            requester=user,
             donor=donor,
             status=ContactRequestStatus.PENDING,
         ).first()
@@ -264,29 +264,77 @@ class DonorContactRequestListCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        hospital_name = validated.get("hospital_name")
+        if not hospital_name:
+            if hasattr(user, "hospital") and user.hospital:
+                hospital_name = user.hospital.name
+            else:
+                hospital_name = getattr(user, "address", "") or "Hospital Facility"
+
+        blood_group = validated.get("blood_group") or donor.blood_group
+        urgency = validated.get("urgency", "NORMAL")
+        message = validated.get("message", "")
+        reason = validated.get("reason", "") or message
+
         contact_req = DonorContactRequest.objects.create(
-            requester=request.user,
+            blood_request_id=validated.get("blood_request_id"),
             donor=donor,
+            requester=user,
+            hospital_name=hospital_name,
+            blood_group=blood_group,
+            urgency=urgency,
+            message=message,
             reason=reason,
             status=ContactRequestStatus.PENDING,
         )
 
-        # Create in-app notification for the target donor
-        requester_label = request.user.first_name or request.user.username
-        if request.user.role == UserRole.HOSPITAL_STAFF and request.user.hospital:
-            requester_label = f"{request.user.hospital.name} staff ({requester_label})"
+        requester_label = user.first_name or user.username
+        if user.role == UserRole.HOSPITAL_STAFF and getattr(user, "hospital", None):
+            requester_label = f"{user.hospital.name} staff ({requester_label})"
 
         create_notification(
             recipient=donor.user,
             title="New Donor Contact Request",
-            message=f"{requester_label} has requested your contact details. Reason: {reason}",
+            message=f"{requester_label} has requested your contact details for an urgent requirement. Reason: {reason or message}",
             notification_type=NotificationType.GENERAL,
         )
 
         return Response(
-            DonorContactRequestSerializer(contact_req).data,
+            DonorContactRequestSerializer(contact_req, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
         )
+
+
+@extend_schema_view(
+    get=extend_schema(
+        summary="Retrieve Donor Contact Request Details",
+        description="Retrieve details of a specific contact request. Phone and email are included only if approved.",
+        responses={200: DonorContactRequestSerializer, 403: OpenApiResponse(description="Access denied"), 404: OpenApiResponse(description="Not found")},
+        tags=["Donor Contact Consent"],
+    )
+)
+class DonorContactRequestDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        try:
+            req_obj = DonorContactRequest.objects.select_related("donor__user", "requester", "blood_request", "donation").get(pk=pk)
+        except DonorContactRequest.DoesNotExist:
+            return Response({"detail": "Contact request not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        user = request.user
+        is_owner = (
+            req_obj.requester_id == user.id
+            or (hasattr(user, "donor_profile") and user.donor_profile.id == req_obj.donor_id)
+            or req_obj.donor.user_id == user.id
+            or user.is_super_admin
+            or user.is_superuser
+        )
+        if not is_owner:
+            return Response({"detail": "You do not have permission to view this contact request."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = DonorContactRequestSerializer(req_obj, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 @extend_schema_view(
@@ -296,6 +344,7 @@ class DonorContactRequestListCreateView(APIView):
         request=DonorContactRequestRespondSerializer,
         responses={
             200: DonorContactRequestSerializer,
+            400: OpenApiResponse(description="Invalid request or already resolved"),
             403: OpenApiResponse(description="Only the targeted donor can respond."),
             404: OpenApiResponse(description="Request not found."),
         },
@@ -307,6 +356,7 @@ class DonorContactRequestListCreateView(APIView):
         request=DonorContactRequestRespondSerializer,
         responses={
             200: DonorContactRequestSerializer,
+            400: OpenApiResponse(description="Invalid request or already resolved"),
             403: OpenApiResponse(description="Only the targeted donor can respond."),
             404: OpenApiResponse(description="Request not found."),
         },
@@ -315,7 +365,7 @@ class DonorContactRequestListCreateView(APIView):
 )
 class DonorContactRequestRespondView(APIView):
     """
-    Allows a donor to Accept or Decline a contact access request.
+    Allows a donor to Accept (APPROVE) or Decline (DECLINE) a contact access request.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -330,23 +380,44 @@ class DonorContactRequestRespondView(APIView):
         if not contact_req:
             return Response({"detail": "Contact request not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Strictly enforce that only the target donor can respond
-        if contact_req.donor.user_id != request.user.id:
+        user = request.user
+        is_target_donor = (
+            contact_req.donor.user_id == user.id
+            or (hasattr(user, "donor_profile") and user.donor_profile.id == contact_req.donor_id)
+        )
+        if not is_target_donor:
             return Response(
                 {"detail": "Only the target donor has authority to respond to this consent request."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        serializer = DonorContactRequestRespondSerializer(data=request.data)
+        if contact_req.blood_request_id:
+            from apps.blood_requests.views import BloodRequestDonorRespondView
+            return BloodRequestDonorRespondView().post(request, contact_req.blood_request_id)
+
+        if contact_req.status != ContactRequestStatus.PENDING:
+            return Response(
+                {"detail": f"This contact request has already been {contact_req.get_status_display().lower()}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+        if "status" in data and "action" not in data:
+            data["action"] = data["status"]
+        serializer = DonorContactRequestRespondSerializer(data=data)
         serializer.is_valid(raise_exception=True)
-        decision = serializer.validated_data["status"]
+        action = serializer.validated_data["action"].upper()
+
+        if action in ("APPROVE", "APPROVED", "ACCEPT", "ACCEPTED"):
+            decision = ContactRequestStatus.APPROVED
+        else:
+            decision = ContactRequestStatus.DECLINED
 
         contact_req.status = decision
         contact_req.responded_at = timezone.now()
         contact_req.save(update_fields=["status", "responded_at", "updated_at"])
 
-        # Notify the requester of the decision
-        donor_name = contact_req.donor.user.first_name or f"Donor #{contact_req.donor_id}"
+        donor_name = contact_req.donor.user.first_name or contact_req.donor.user.full_name or f"Donor #{contact_req.donor_id}"
         if decision == ContactRequestStatus.APPROVED:
             create_notification(
                 recipient=contact_req.requester,
@@ -362,7 +433,7 @@ class DonorContactRequestRespondView(APIView):
                 notification_type=NotificationType.GENERAL,
             )
 
-        return Response(DonorContactRequestSerializer(contact_req).data, status=status.HTTP_200_OK)
+        return Response(DonorContactRequestSerializer(contact_req, context={"request": request}).data, status=status.HTTP_200_OK)
 
 
 @extend_schema_view(
@@ -415,4 +486,3 @@ class DonorContactDetailsView(APIView):
             )
 
         return Response(DonorPrivateContactSerializer(donor).data, status=status.HTTP_200_OK)
-

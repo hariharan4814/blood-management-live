@@ -154,7 +154,11 @@ class DonationCampRegistrationSerializer(serializers.ModelSerializer):
     Serializer for viewing DonationCampRegistration details.
     """
     donor_id = serializers.ReadOnlyField()
-    donor_username = serializers.ReadOnlyField(source="donor.user.username")
+    donor_username = serializers.SerializerMethodField()
+
+    def get_donor_username(self, obj):
+        from apps.donors.privacy import public_username
+        return public_username(obj.donor.user)
     donor_blood_group = serializers.ReadOnlyField(source="donor.blood_group")
     camp_id = serializers.ReadOnlyField()
     camp_name = serializers.ReadOnlyField(source="camp.name")
@@ -186,7 +190,11 @@ class DonationSerializer(serializers.ModelSerializer):
     Detailed read-only serializer for Donation collection records.
     """
     donor_id = serializers.ReadOnlyField()
-    donor_username = serializers.ReadOnlyField(source="donor.user.username")
+    donor_username = serializers.SerializerMethodField()
+
+    def get_donor_username(self, obj):
+        from apps.donors.privacy import public_username
+        return public_username(obj.donor.user)
     donor_blood_group = serializers.ReadOnlyField(source="donor.blood_group")
     blood_bank_id = serializers.ReadOnlyField()
     blood_bank_name = serializers.ReadOnlyField(source="blood_bank.name")

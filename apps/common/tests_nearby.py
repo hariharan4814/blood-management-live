@@ -332,3 +332,136 @@ class NearbyAPITests(APITestCase):
         self.donor1.refresh_from_db()
         self.assertEqual(self.donor1.latitude, Decimal("12.971600"))
         self.assertEqual(self.donor1.longitude, Decimal("77.594600"))
+
+    def test_super_admin_all_donors_success(self):
+        """11. Super Admin can query all registered donors via all_donors=true."""
+        # Create an inactive/cooldown donor to verify eligibility display
+        ineligible_user = User.objects.create_user(
+            username="donor_cooldown",
+            email="donor_cooldown@test.com",
+            password="DonorPassword123!",
+            role=UserRole.DONOR,
+            latitude=Decimal("13.100000"),
+            longitude=Decimal("80.200000"),
+        )
+        ineligible_donor = Donor.objects.create(
+            user=ineligible_user,
+            blood_group=BloodGroup.AB_POSITIVE,
+            date_of_birth=timezone.now().date() - timezone.timedelta(days=22 * 365),
+            weight_kg=Decimal("70.00"),
+            latitude=Decimal("13.100000"),
+            longitude=Decimal("80.200000"),
+            last_donation_date=timezone.now().date() - timezone.timedelta(days=10), # within 90 days
+        )
+
+        self.client.force_authenticate(user=self.super_admin)
+        res = self.client.get("/api/nearby/?all_donors=true")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        donors = res.data["results"]["donors"]
+        donor_ids = [d["donor_id"] for d in donors]
+
+        # All donors with coordinates should be present (both close and far)
+        self.assertIn(self.donor1.id, donor_ids)
+        self.assertIn(self.donor2.id, donor_ids)
+        self.assertIn(ineligible_donor.id, donor_ids)
+        # Donor without coordinates should not crash and be excluded from map
+        self.assertNotIn(self.donor_no_coords.id, donor_ids)
+
+        # Check privacy & eligibility flags
+        for d in donors:
+            self.assertIn("approximate_latitude", d)
+            self.assertIn("approximate_longitude", d)
+            self.assertIn("is_eligible", d)
+            self.assertNotIn("password", d)
+            self.assertNotIn("email", d)
+            self.assertNotIn("phone", d)
+            self.assertNotIn("address", d)
+            if d["donor_id"] == ineligible_donor.id:
+                self.assertFalse(d["is_eligible"])
+            elif d["donor_id"] == self.donor1.id:
+                self.assertTrue(d["is_eligible"])
+
+    def test_super_admin_all_blood_banks_success(self):
+        """12. Super Admin can query all registered blood banks including inactive ones."""
+        # Create an inactive blood bank
+        inactive_bank = BloodBank.objects.create(
+            name="Inactive Peripheral Blood Bank",
+            city="Tambaram",
+            state="Tamil Nadu",
+            address="50 Station Road",
+            contact_number="+91 44 2200 0002",
+            email="inactive_bank@test.org",
+            capacity=50,
+            latitude=Decimal("12.920000"),
+            longitude=Decimal("80.120000"),
+            is_active=False,
+        )
+
+        self.client.force_authenticate(user=self.super_admin)
+        res = self.client.get("/api/nearby/?all_blood_banks=true")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        banks = res.data["results"]["blood_banks"]
+        bank_ids = [b["id"] for b in banks]
+
+        self.assertIn(self.blood_bank.id, bank_ids)
+        self.assertIn(inactive_bank.id, bank_ids)
+
+        # Check facility privacy & active state
+        for b in banks:
+            self.assertIn("is_active", b)
+            self.assertIn("capacity", b)
+            self.assertIn("name", b)
+            self.assertNotIn("password", b)
+            self.assertNotIn("admin_password", b)
+            self.assertNotIn("auth_token", b)
+            if b["id"] == inactive_bank.id:
+                self.assertFalse(b["is_active"])
+            elif b["id"] == self.blood_bank.id:
+                self.assertTrue(b["is_active"])
+
+    def test_super_admin_all_combination_layers(self):
+        """13. Super Admin can query all layers combined."""
+        self.client.force_authenticate(user=self.super_admin)
+        res = self.client.get("/api/nearby/?all_donors=true&all_blood_banks=true&all_hospitals=true")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        self.assertTrue(len(res.data["results"]["donors"]) >= 2)
+        self.assertTrue(len(res.data["results"]["blood_banks"]) >= 1)
+        self.assertTrue(len(res.data["results"]["hospitals"]) >= 1)
+
+    def test_non_super_admin_rbac_forbidden_for_all_layers(self):
+        """14. Non-super admin roles get 403 Forbidden for all_donors and all_blood_banks."""
+        lab_tech = User.objects.create_user(
+            username="labtech_nearby",
+            email="labtech_nearby@test.com",
+            password="TechPassword123!",
+            role=UserRole.LAB_TECHNICIAN,
+        )
+
+        test_roles = [
+            ("Hospital Staff", self.hospital_staff),
+            ("Blood Bank Admin", self.bank_admin),
+            ("Lab Technician", lab_tech),
+            ("Donor", self.donor_user1),
+        ]
+
+        for role_name, test_user in test_roles:
+            self.client.force_authenticate(user=test_user)
+
+            # all_donors=true forbidden
+            res_donors = self.client.get("/api/nearby/?all_donors=true")
+            self.assertEqual(
+                res_donors.status_code,
+                status.HTTP_403_FORBIDDEN,
+                f"Role {role_name} should be forbidden from all_donors",
+            )
+
+            # all_blood_banks=true forbidden
+            res_banks = self.client.get("/api/nearby/?all_blood_banks=true")
+            self.assertEqual(
+                res_banks.status_code,
+                status.HTTP_403_FORBIDDEN,
+                f"Role {role_name} should be forbidden from all_blood_banks",
+            )

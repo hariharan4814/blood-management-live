@@ -22,9 +22,9 @@ class CanManageOrViewBloodRequests(permissions.BasePermission):
             # Only hospital staff can create blood requests (Super Admin, Blood Bank Admin, Lab Tech, Donor cannot create)
             return request.user.role == UserRole.HOSPITAL_STAFF
 
-        # GET: Hospital Staff, Blood Bank Admin, Super Admin
+        # GET: Hospital Staff, Blood Bank Admin, Super Admin, Donor
         return (
-            request.user.role in [UserRole.HOSPITAL_STAFF, UserRole.BLOOD_BANK_ADMIN]
+            request.user.role in [UserRole.HOSPITAL_STAFF, UserRole.BLOOD_BANK_ADMIN, UserRole.DONOR]
             or request.user.is_super_admin
         )
 
@@ -40,6 +40,10 @@ class CanManageOrViewBloodRequests(permissions.BasePermission):
 
         if request.user.role == UserRole.BLOOD_BANK_ADMIN:
             return obj.blood_bank.admin_id == request.user.id
+
+        if request.user.role == UserRole.DONOR:
+            from .models import RequestStatus
+            return request.method in permissions.SAFE_METHODS and obj.status in [RequestStatus.PENDING, RequestStatus.APPROVED]
 
         return False
 

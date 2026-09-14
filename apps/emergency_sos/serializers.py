@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from apps.accounts.models import User
 from apps.blood_requests.models import BloodRequest
+from .compatibility import calculate_haversine_distance_km
 from .models import SOSBroadcast, SOSRecipient, SOSStatus
 
 
@@ -46,6 +47,10 @@ class SOSBloodRequestSummarySerializer(serializers.ModelSerializer):
     """
     hospital_staff_username = serializers.CharField(source="hospital_staff.username", read_only=True)
     blood_bank_name = serializers.CharField(source="blood_bank.name", read_only=True)
+    blood_bank_latitude = serializers.DecimalField(source="blood_bank.latitude", max_digits=9, decimal_places=6, read_only=True)
+    blood_bank_longitude = serializers.DecimalField(source="blood_bank.longitude", max_digits=9, decimal_places=6, read_only=True)
+    blood_bank_address = serializers.CharField(source="blood_bank.address", read_only=True)
+    blood_bank_city = serializers.CharField(source="blood_bank.city", read_only=True)
     urgency_display = serializers.CharField(source="get_urgency_display", read_only=True)
     status_display = serializers.CharField(source="get_status_display", read_only=True)
 
@@ -55,6 +60,10 @@ class SOSBloodRequestSummarySerializer(serializers.ModelSerializer):
             "id",
             "hospital_staff_username",
             "blood_bank_name",
+            "blood_bank_latitude",
+            "blood_bank_longitude",
+            "blood_bank_address",
+            "blood_bank_city",
             "blood_group",
             "units_needed",
             "urgency",
@@ -107,8 +116,13 @@ class SOSRecipientSerializer(serializers.ModelSerializer):
     """
     Serializer for auditing donor recipients targeted by an SOS broadcast.
     """
-    donor_username = serializers.CharField(source="user.username", read_only=True)
+    donor_username = serializers.SerializerMethodField()
+
+    def get_donor_username(self, obj):
+        from apps.donors.privacy import public_username
+        return public_username(obj.user)
     donor_blood_group = serializers.CharField(source="donor.blood_group", read_only=True)
+    distance_km = serializers.SerializerMethodField(help_text="Real great-circle distance in km between donor and emergency facility.")
 
     class Meta:
         model = SOSRecipient
@@ -118,6 +132,7 @@ class SOSRecipientSerializer(serializers.ModelSerializer):
             "donor",
             "donor_username",
             "donor_blood_group",
+            "distance_km",
             "notification",
             "email_attempted",
             "email_sent",
@@ -125,3 +140,47 @@ class SOSRecipientSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = fields
+
+    def get_distance_km(self, obj) -> float | None:
+        try:
+            if not obj.donor or not obj.sos_broadcast or not obj.sos_broadcast.blood_request:
+                return None
+            bank = obj.sos_broadcast.blood_request.blood_bank
+            if not bank or bank.latitude is None or bank.longitude is None:
+                return None
+            if obj.donor.latitude is None or obj.donor.longitude is None:
+                return None
+            dist = calculate_haversine_distance_km(
+                bank.latitude, bank.longitude, round(float(obj.donor.latitude), 2), round(float(obj.donor.longitude), 2)
+            )
+            return round(float(dist), 2) if dist is not None else None
+        except Exception:
+            return None
+
+
+class SOSDonorPreviewItemSerializer(serializers.Serializer):
+    """
+    Privacy-preserving representation of a compatible, eligible donor for SOS map preview.
+    Exact residential address, full name, phone number, and precise GPS coordinates are withheld.
+    """
+    id = serializers.CharField(help_text="Opaque marker identifier (e.g. DONOR-12)")
+    donor_id = serializers.IntegerField(help_text="Donor identifier")
+    blood_group = serializers.CharField(help_text="Donor ABO/Rh blood group")
+    is_eligible = serializers.BooleanField(default=True, help_text="Medical eligibility status")
+    distance_km = serializers.FloatField(allow_null=True, help_text="Real great-circle distance from facility (km)")
+    approximate_latitude = serializers.FloatField(allow_null=True, help_text="Fuzzed coordinate (~1.1 km precision)")
+    approximate_longitude = serializers.FloatField(allow_null=True, help_text="Fuzzed coordinate (~1.1 km precision)")
+
+
+class SOSDonorPreviewResponseSerializer(serializers.Serializer):
+    """
+    Response schema for Emergency SOS donor preview before broadcast dispatch.
+    """
+    blood_request_id = serializers.IntegerField()
+    blood_group_requested = serializers.CharField()
+    units_needed = serializers.IntegerField()
+    radius_km = serializers.FloatField(allow_null=True)
+    center_latitude = serializers.FloatField(allow_null=True)
+    center_longitude = serializers.FloatField(allow_null=True)
+    eligible_donors_count = serializers.IntegerField()
+    donors = SOSDonorPreviewItemSerializer(many=True)

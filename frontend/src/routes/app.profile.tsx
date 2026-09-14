@@ -121,7 +121,10 @@ function ProfilePage() {
     setError(null);
 
     try {
-      const selectedBloodGroup = form.bloodGroup || (profile?.role === "DONOR" ? "O+" : undefined);
+      if (profile?.role === "DONOR" && (!form.bloodGroup || !form.dob || !form.weightKg)) {
+        throw new Error("Enter your blood group, date of birth, and weight to complete your donor profile.");
+      }
+      const selectedBloodGroup = form.bloodGroup || undefined;
       const updated = await profileService.updateProfile({
         first_name: form.firstName.trim(),
         last_name: form.lastName.trim(),
@@ -134,9 +137,9 @@ function ProfilePage() {
 
       if (profile?.role === "DONOR") {
         const updatedDonor = await profileService.updateDonorDetails({
-          blood_group: (selectedBloodGroup || "O+") as BloodGroup,
-          date_of_birth: form.dob || "2000-01-01",
-          weight_kg: form.weightKg ? parseFloat(form.weightKg) : 60,
+          blood_group: selectedBloodGroup as BloodGroup,
+          date_of_birth: form.dob,
+          weight_kg: parseFloat(form.weightKg),
         });
         setDonor(updatedDonor);
 

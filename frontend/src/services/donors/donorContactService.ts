@@ -8,8 +8,12 @@ export interface DonorContactRequestItem {
   requester_name: string;
   requester_role: Role;
   donor_id: number;
-  donor_blood_group: string;
-  reason: string;
+  donor_blood_group?: string;
+  hospital_name?: string;
+  blood_group?: string;
+  urgency?: string;
+  message?: string;
+  reason?: string;
   status: "PENDING" | "APPROVED" | "DECLINED";
   responded_at?: string | null;
   created_at: string;
@@ -56,12 +60,15 @@ export const donorContactService = {
   },
 
   /**
-   * Donor responds to a contact request (APPROVED or DECLINED).
+   * Donor responds to a contact request (APPROVED or DECLINED / APPROVE or DECLINE).
    */
-  respondToContactRequest: async (requestId: number, status: "APPROVED" | "DECLINED"): Promise<DonorContactRequestItem> => {
+  respondToContactRequest: async (
+    requestId: number,
+    status: "APPROVED" | "DECLINED" | "APPROVE" | "DECLINE",
+  ): Promise<DonorContactRequestItem> => {
     return request<DonorContactRequestItem>(`/api/donors/contact-requests/${requestId}/respond/`, {
       method: "POST",
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ action: status, status }),
     });
   },
 

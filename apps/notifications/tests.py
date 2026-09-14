@@ -242,7 +242,7 @@ class NotificationAPITests(TestCase):
         self.client.force_authenticate(user=self.donor1)
         response = self.client.get("/api/notifications/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        
+
         # Paginated response check
         results = response.data.get("results", response.data)
         self.assertEqual(len(results), 3)
@@ -453,6 +453,67 @@ class EmailRecipientAPITests(TestCase):
         response = self.client.delete(f"/api/notifications/recipients/{self.recipient1.id}/")
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(EmailRecipient.objects.filter(pk=self.recipient1.id).exists())
+
+    def test_create_all_canonical_recipient_categories(self):
+        """
+        Verify that all canonical recipient categories can be created by an authorized admin.
+        """
+        self.client.force_authenticate(user=self.super_admin)
+        categories = [
+            ("EMERGENCY_DESK", "External Emergency Partner", "Emergency Desk Contact"),
+            ("ADMIN", "System Administrator", "Administrator"),
+            ("BLOOD_BANK", "Regional Coordinator", "Blood Bank Coordinator"),
+            ("HOSPITAL", "City Hospital Contact", "Hospital Contact"),
+            ("STAFF", "Operations Staff", "Staff Member"),
+            ("GENERAL", "General Dispatch Subscriber", "General Subscriber"),
+        ]
+
+        for idx, (cat_code, name, expected_display) in enumerate(categories):
+            email = f"recipient_{idx}_{cat_code.lower()}@example.org"
+            response = self.client.post(
+                "/api/notifications/recipients/",
+                {
+                    "email": email,
+                    "name": name,
+                    "recipient_type": cat_code,
+                    "is_active": True,
+                },
+            )
+            self.assertEqual(
+                response.status_code,
+                status.HTTP_201_CREATED,
+                f"Failed to create recipient with category '{cat_code}': {response.data}",
+            )
+            self.assertEqual(response.data["recipient_type"], cat_code)
+            self.assertEqual(response.data["recipient_type_display"], expected_display)
+
+            recipient = EmailRecipient.objects.get(email=email)
+            self.assertEqual(recipient.recipient_type, cat_code)
+
+    def test_invalid_recipient_type_rejected(self):
+        """
+        Verify that invalid recipient_type values (such as EXTERNAL_EMERGENCY or arbitrary strings)
+        are rejected with HTTP 400 Bad Request.
+        """
+        self.client.force_authenticate(user=self.super_admin)
+        invalid_types = ["EXTERNAL_EMERGENCY", "HOSPITAL_STAFF", "BLOOD_BANK_ADMIN", "DONOR", "SYSTEM_ADMIN", "INVALID_CHOICE"]
+
+        for idx, invalid_type in enumerate(invalid_types):
+            response = self.client.post(
+                "/api/notifications/recipients/",
+                {
+                    "email": f"invalid_{idx}@example.org",
+                    "name": f"Invalid {invalid_type}",
+                    "recipient_type": invalid_type,
+                },
+            )
+            self.assertEqual(
+                response.status_code,
+                status.HTTP_400_BAD_REQUEST,
+                f"Expected 400 Bad Request for invalid recipient_type '{invalid_type}'",
+            )
+            self.assertIn("recipient_type", response.data)
+
 
 
 class NotificationServiceTests(TestCase):
@@ -776,5 +837,3 @@ class EmailManagementAPITests(TestCase):
         }
         response = self.client.post("/api/notifications/test-email/", payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-
-

@@ -166,7 +166,92 @@ export const requestService = {
    * Fetch active blood banks for target selection in request form.
    */
   listBloodBanks: async (): Promise<BloodBankOption[]> => {
-    const res = await request<{ results?: BloodBankOption[] } | BloodBankOption[]>("/api/blood-banks/");
-    return Array.isArray(res) ? res : res.results || [];
+    try {
+      const res = await request<{ results?: BloodBankOption[] } | BloodBankOption[]>("/api/blood-banks/");
+      return Array.isArray(res) ? res : res.results || [];
+    } catch {
+      return [];
+    }
+  },
+
+  /**
+   * Donor accepts or declines a specific blood request.
+   */
+  respond: async (
+    id: string | number,
+    action: "ACCEPT" | "DECLINE" | "APPROVE",
+    notes?: string,
+  ): Promise<DonorContactResponse> => {
+    const rawId = typeof id === "string" ? id.replace(/^REQ-/, "") : id;
+    return request<DonorContactResponse>(`/api/blood-requests/${rawId}/respond/`, {
+      method: "POST",
+      body: JSON.stringify({ action, notes: notes || "" }),
+    });
+  },
+
+  /**
+   * Hospital Staff or Super Admin lists donor responses for a specific blood request.
+   */
+  listResponses: async (id: string | number): Promise<DonorContactResponse[]> => {
+    const rawId = typeof id === "string" ? id.replace(/^REQ-/, "") : id;
+    try {
+      const res = await request<DonorContactResponse[] | { results: DonorContactResponse[] }>(
+        `/api/blood-requests/${rawId}/responses/`,
+      );
+      return Array.isArray(res) ? res : res.results || [];
+    } catch {
+      return [];
+    }
+  },
+
+  /**
+   * Hospital Staff records the actual clinical donation outcome for an accepted donor response.
+   */
+  recordOutcome: async (
+    requestId: string | number,
+    responseId: number,
+    data: { outcome: "COMPLETED" | "DID_NOT_HAPPEN"; notes?: string },
+  ): Promise<DonorContactResponse> => {
+    const rawId = typeof requestId === "string" ? requestId.replace(/^REQ-/, "") : requestId;
+    return request<DonorContactResponse>(
+      `/api/blood-requests/${rawId}/responses/${responseId}/outcome/`,
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      },
+    );
   },
 };
+
+export interface DonorContactResponse {
+  id: number;
+  blood_request?: number | null;
+  blood_request_id?: number | null;
+  donor_id: number;
+  donor_display: string;
+  donor_blood_group?: string;
+  requester_id: number;
+  requester_name: string;
+  hospital_name: string;
+  blood_group: string;
+  urgency: string;
+  message: string;
+  status: "PENDING" | "APPROVED" | "DECLINED";
+  responded_at: string | null;
+  donation?: number | null;
+  donation_id?: number | null;
+  donation_outcome?: "NOT_RECORDED" | "COMPLETED" | "DID_NOT_HAPPEN";
+  donation_outcome_display?: string;
+  outcome_recorded_at?: string | null;
+  outcome_recorded_by?: number | null;
+  outcome_recorded_by_name?: string | null;
+  outcome_notes?: string;
+  created_at: string;
+  updated_at: string;
+  contact_details?: {
+    name: string;
+    phone: string;
+    email: string;
+    blood_group: string;
+  } | null;
+}

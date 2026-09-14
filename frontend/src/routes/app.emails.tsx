@@ -85,7 +85,7 @@ function EmailManagementPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [newEmail, setNewEmail] = useState("");
   const [newName, setNewName] = useState("");
-  const [newType, setNewType] = useState<ManagedRecipient["recipient_type"]>("EXTERNAL_EMERGENCY");
+  const [newType, setNewType] = useState<ManagedRecipient["recipient_type"]>("EMERGENCY_DESK");
   const [addingRecipient, setAddingRecipient] = useState(false);
 
   const handleSendTest = async (e: React.FormEvent) => {
@@ -127,6 +127,7 @@ function EmailManagementPage() {
       setAddOpen(false);
       setNewEmail("");
       setNewName("");
+      setNewType("EMERGENCY_DESK");
       recipients.reload();
     } catch (err: any) {
       toast.error(err.message || "Failed to add email recipient.");
@@ -255,11 +256,12 @@ function EmailManagementPage() {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="EXTERNAL_EMERGENCY">External Emergency Partner</SelectItem>
-                            <SelectItem value="HOSPITAL_STAFF">Hospital Staff</SelectItem>
-                            <SelectItem value="BLOOD_BANK_ADMIN">Blood Bank Admin</SelectItem>
-                            <SelectItem value="DONOR">Voluntary Donor</SelectItem>
-                            <SelectItem value="SYSTEM_ADMIN">System Admin</SelectItem>
+                            <SelectItem value="EMERGENCY_DESK">External Emergency Partner</SelectItem>
+                            <SelectItem value="HOSPITAL">Hospital Contact</SelectItem>
+                            <SelectItem value="BLOOD_BANK">Blood Bank Coordinator</SelectItem>
+                            <SelectItem value="STAFF">Staff Member</SelectItem>
+                            <SelectItem value="ADMIN">Administrator</SelectItem>
+                            <SelectItem value="GENERAL">General Subscriber</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>

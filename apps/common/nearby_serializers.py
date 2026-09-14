@@ -1,4 +1,4 @@
-from decimal import Decimal
+﻿from decimal import Decimal
 from rest_framework import serializers
 from apps.donors.models import BloodGroup
 
@@ -12,7 +12,8 @@ class NearbyQueryParamSerializer(serializers.Serializer):
         decimal_places=6,
         min_value=Decimal("-90.000000"),
         max_value=Decimal("90.000000"),
-        required=True,
+        required=False,
+        allow_null=True,
         help_text="Center latitude coordinate (-90.0 to 90.0).",
     )
     lng = serializers.DecimalField(
@@ -20,7 +21,8 @@ class NearbyQueryParamSerializer(serializers.Serializer):
         decimal_places=6,
         min_value=Decimal("-180.000000"),
         max_value=Decimal("180.000000"),
-        required=True,
+        required=False,
+        allow_null=True,
         help_text="Center longitude coordinate (-180.0 to 180.0).",
     )
     radius = serializers.FloatField(
@@ -46,11 +48,39 @@ class NearbyQueryParamSerializer(serializers.Serializer):
         default=True,
         help_text="Filter donors to only medically eligible individuals.",
     )
+    all_donors = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text="Super Admin administrative flag to return all registered donors.",
+    )
+    all_blood_banks = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text="Super Admin administrative flag to return all registered blood banks.",
+    )
     all_hospitals = serializers.BooleanField(
         required=False,
         default=False,
-        help_text="Return all registered hospitals regardless of radius.",
+        help_text="Super Admin administrative flag to return all registered hospitals.",
     )
+
+    def validate(self, attrs):
+        all_donors = attrs.get("all_donors", False)
+        all_blood_banks = attrs.get("all_blood_banks", False)
+        all_hospitals = attrs.get("all_hospitals", False)
+        is_all_mode = all_donors or all_blood_banks or all_hospitals
+
+        lat = attrs.get("lat")
+        lng = attrs.get("lng")
+
+        if not is_all_mode and (lat is None or lng is None):
+            raise serializers.ValidationError(
+                {
+                    "lat": "Latitude and longitude coordinates are required for proximity search."
+                }
+            )
+
+        return attrs
 
 
 class NearbyDonorSerializer(serializers.Serializer):
@@ -64,9 +94,17 @@ class NearbyDonorSerializer(serializers.Serializer):
     is_eligible = serializers.BooleanField()
     age = serializers.IntegerField(allow_null=True)
     last_donation_date = serializers.DateField(allow_null=True)
-    distance_km = serializers.FloatField(help_text="Great-circle distance in kilometers.")
-    approximate_latitude = serializers.FloatField(help_text="Fuzzed coordinate (~1.1 km resolution).")
-    approximate_longitude = serializers.FloatField(help_text="Fuzzed coordinate (~1.1 km resolution).")
+    distance_km = serializers.FloatField(
+        allow_null=True,
+        required=False,
+        help_text="Great-circle distance in kilometers.",
+    )
+    approximate_latitude = serializers.FloatField(
+        help_text="Fuzzed coordinate (~1.1 km resolution)."
+    )
+    approximate_longitude = serializers.FloatField(
+        help_text="Fuzzed coordinate (~1.1 km resolution)."
+    )
 
 
 class NearbyHospitalSerializer(serializers.Serializer):
@@ -83,7 +121,8 @@ class NearbyHospitalSerializer(serializers.Serializer):
     beds = serializers.IntegerField()
     latitude = serializers.FloatField()
     longitude = serializers.FloatField()
-    distance_km = serializers.FloatField()
+    is_active = serializers.BooleanField(required=False, default=True)
+    distance_km = serializers.FloatField(allow_null=True, required=False)
     rating = serializers.FloatField(allow_null=True, required=False)
     review_count = serializers.IntegerField(default=0, required=False)
 
@@ -102,7 +141,8 @@ class NearbyBloodBankSerializer(serializers.Serializer):
     capacity = serializers.IntegerField()
     latitude = serializers.FloatField()
     longitude = serializers.FloatField()
-    distance_km = serializers.FloatField()
+    is_active = serializers.BooleanField(required=False, default=True)
+    distance_km = serializers.FloatField(allow_null=True, required=False)
     rating = serializers.FloatField(allow_null=True, required=False)
     review_count = serializers.IntegerField(default=0, required=False)
 
@@ -111,7 +151,7 @@ class NearbySearchResultsSerializer(serializers.Serializer):
     """
     Composite response for nearby proximity search.
     """
-    search_center = serializers.DictField()
+    search_center = serializers.DictField(allow_null=True, required=False)
     results = serializers.DictField()
     total_count = serializers.IntegerField()
     donor_access_note = serializers.CharField(required=False, allow_null=True)

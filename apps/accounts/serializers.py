@@ -5,6 +5,7 @@ from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from apps.donors.models import BloodGroup, Donor
+from apps.donors.privacy import public_username
 from .models import UserRole
 
 User = get_user_model()
@@ -15,6 +16,16 @@ class UserSerializer(serializers.ModelSerializer):
     Serializer for User model representation (safe fields only).
     """
     hospital_name = serializers.CharField(source="hospital.name", read_only=True)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        user = getattr(self.context.get("request"), "user", None)
+        registering_self = self.context.get("newly_registered_user") is instance
+        if instance.role == UserRole.DONOR and not registering_self and (not user or user.id != instance.id):
+            for field in ("email", "phone", "first_name", "last_name", "address", "latitude", "longitude"):
+                data.pop(field, None)
+            data["username"] = public_username(instance)
+        return data
 
     class Meta:
         model = User
@@ -76,6 +87,12 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         allow_blank=True,
         help_text="ABO and Rh blood group (used when registering as DONOR)."
     )
+    name = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        write_only=True,
+        help_text="Full name or staff contact name for registration."
+    )
     contact_person_name = serializers.CharField(
         required=False,
         allow_blank=True,
@@ -136,6 +153,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             "id",
             "username",
             "email",
+            "name",
             "password",
             "password_confirm",
             "role",
@@ -190,19 +208,29 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
                 counter += 1
             attrs["username"] = candidate
 
+        name_val = (attrs.get("name") or attrs.get("contact_person_name") or "").strip()
+        if name_val:
+            attrs["contact_person_name"] = name_val
+
+        hosp_str = (attrs.get("hospital_name") or attrs.get("hospital") or "").strip()
+        if hosp_str and not attrs.get("address"):
+            attrs["address"] = hosp_str
+
         role = attrs.get("role", UserRole.DONOR)
         if role == UserRole.HOSPITAL_STAFF:
-            lat = attrs.get("latitude")
-            lng = attrs.get("longitude")
-            errors = {}
-            if lat is None:
-                errors["latitude"] = "Latitude is required for hospital registration."
-            if lng is None:
-                errors["longitude"] = "Longitude is required for hospital registration."
-            if errors:
-                raise serializers.ValidationError(errors)
+            is_explicit_hospital_reg = bool(attrs.get("hospital_name") or attrs.get("latitude") or attrs.get("longitude"))
+            if is_explicit_hospital_reg:
+                lat = attrs.get("latitude")
+                lng = attrs.get("longitude")
+                errors = {}
+                if lat is None:
+                    errors["latitude"] = "Latitude is required for hospital registration."
+                if lng is None:
+                    errors["longitude"] = "Longitude is required for hospital registration."
+                if errors:
+                    raise serializers.ValidationError(errors)
 
-            hosp_name = (attrs.get("hospital_name") or attrs.get("hospital") or "").strip()
+            hosp_name = hosp_str
             if not hosp_name:
                 contact_person = (attrs.get("contact_person_name") or "").strip()
                 username_val = attrs.get("username") or "Facility"
@@ -226,8 +254,10 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         validated_data.pop("password_confirm", None)
         password = validated_data.pop("password")
         blood_group = validated_data.pop("blood_group", None)
+        name_val = (validated_data.pop("name", "") or "").strip()
         contact_person = (validated_data.pop("contact_person_name", "") or "").strip()
-        
+        person_name = name_val or contact_person
+
         # Explicitly extract and remove both hospital_name and hospital string fields
         # to ensure validated_data never contains a duplicate 'hospital' string argument
         hosp_name = (validated_data.pop("hospital_name", "") or "").strip()
@@ -242,8 +272,8 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         latitude = validated_data.get("latitude", None)
         longitude = validated_data.get("longitude", None)
 
-        if contact_person:
-            parts = contact_person.split(" ", 1)
+        if person_name:
+            parts = person_name.split(" ", 1)
             validated_data["first_name"] = parts[0]
             validated_data["last_name"] = parts[1] if len(parts) > 1 else ""
 
@@ -279,13 +309,10 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             **validated_data
         )
 
-        if user.role == UserRole.DONOR:
-            bg = blood_group if blood_group else BloodGroup.O_POSITIVE
+        if user.role == UserRole.DONOR and blood_group:
             Donor.objects.create(
                 user=user,
-                blood_group=bg,
-                date_of_birth=date(2000, 1, 1),
-                weight_kg=Decimal("60.00"),
+                blood_group=blood_group,
                 latitude=latitude,
                 longitude=longitude,
             )
@@ -293,7 +320,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         return user
 
 
-class UserAdminCreateSerializer(serializers.ModelSerializer):
+class UserAdminCreateSerializer(UserSerializer):
     """
     Serializer for Super Admin user creation (POST /api/users/).
     Supports creating accounts for all roles (SUPER_ADMIN, BLOOD_BANK_ADMIN, LAB_TECHNICIAN, HOSPITAL_STAFF, DONOR).
@@ -349,7 +376,7 @@ class UserAdminCreateSerializer(serializers.ModelSerializer):
         return user
 
 
-class UserAdminUpdateSerializer(serializers.ModelSerializer):
+class UserAdminUpdateSerializer(UserSerializer):
     """
     Serializer for Super Admin user updates (PATCH /api/users/{id}/).
     """

@@ -1,5 +1,5 @@
 import { request } from "../api/client";
-import type { BloodGroup, TestRecord, TestResult } from "@/lib/types";
+import type { BloodGroup, BloodUnitStatus, TestRecord, TestResult } from "@/lib/types";
 
 export interface BackendBloodUnit {
   id: number;
@@ -9,7 +9,7 @@ export interface BackendBloodUnit {
   blood_group: BloodGroup;
   collection_date: string;
   expiry_date: string;
-  status: "AVAILABLE" | "TESTING" | "RESERVED" | "TRANSFUSED" | "DISCARDED" | "EXPIRED";
+  status: BloodUnitStatus;
   created_at: string;
 }
 

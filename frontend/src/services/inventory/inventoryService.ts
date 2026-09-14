@@ -1,5 +1,5 @@
 import { request } from "../api/client";
-import { BLOOD_GROUPS, type BloodGroup } from "@/lib/types";
+import { BLOOD_GROUPS, type BloodGroup, type BloodUnitStatus } from "@/lib/types";
 
 export interface BackendInventoryItem {
   blood_group: BloodGroup;
@@ -25,7 +25,7 @@ export interface BackendBloodUnit {
   blood_group: BloodGroup;
   collection_date: string;
   expiry_date: string;
-  status: "TESTING" | "AVAILABLE" | "RESERVED" | "DISPATCHED" | "DISCARDED";
+  status: BloodUnitStatus;
   status_display: string;
   is_expired: boolean;
   created_at: string;
@@ -48,14 +48,31 @@ export interface BloodUnitItem {
   collectedAt: string;
   expiresAt: string;
   volumeMl: number;
-  status: "TESTING" | "AVAILABLE" | "RESERVED" | "DISPATCHED" | "DISCARDED";
+  status: BloodUnitStatus;
   bank: string;
   isExpired: boolean;
 }
 
 const DEFAULT_THRESHOLD = 5;
 
+export interface BloodUnitCreateInput {
+  blood_bank: number;
+  blood_group: BloodGroup;
+  collection_date: string;
+  unit_id?: string | undefined;
+}
+
 export const inventoryService = {
+  /**
+   * Register a new blood unit in the inventory (initial status forced to TESTING).
+   */
+  createUnit: async (data: BloodUnitCreateInput): Promise<BackendBloodUnit> => {
+    return await request<BackendBloodUnit>("/api/blood-units/", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  },
+
   /**
    * Fetch aggregate stock breakdown across all blood groups.
    */

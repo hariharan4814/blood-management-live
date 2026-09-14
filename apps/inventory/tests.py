@@ -667,6 +667,70 @@ class BloodUnitAPITest(APITestCase):
         res2 = self.client.post("/api/blood-units/", {}, format="json")
         self.assertEqual(res2.status_code, status.HTTP_401_UNAUTHORIZED)
 
+    def test_31_super_admin_can_create_blood_unit_for_any_bank(self):
+        """Test 31: Super Admin can create blood units for any active blood bank."""
+        self.client.force_authenticate(user=self.super_admin)
+        today = timezone.now().date()
+        payload = {
+            "blood_bank": self.bank_2.id,
+            "blood_group": "AB-",
+            "collection_date": str(today),
+            "unit_id": "BU-SUPER-001",
+        }
+        res = self.client.post("/api/blood-units/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data["unit_id"], "BU-SUPER-001")
+        self.assertEqual(res.data["blood_bank"], self.bank_2.id)
+        self.assertEqual(res.data["status"], "TESTING")
+
+    def test_32_hospital_staff_and_donor_denied_blood_unit_creation(self):
+        """Test 32: Hospital Staff and Donor are denied blood unit creation."""
+        today = timezone.now().date()
+        payload = {
+            "blood_bank": self.bank_1.id,
+            "blood_group": "A+",
+            "collection_date": str(today),
+        }
+
+        self.client.force_authenticate(user=self.hospital_staff)
+        res_hosp = self.client.post("/api/blood-units/", payload, format="json")
+        self.assertEqual(res_hosp.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.client.force_authenticate(user=self.donor_user)
+        res_donor = self.client.post("/api/blood-units/", payload, format="json")
+        self.assertEqual(res_donor.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_33_duplicate_unit_id_rejected(self):
+        """Test 33: Explicitly supplying an existing unit_id is rejected."""
+        self.client.force_authenticate(user=self.bank_admin_1)
+        today = timezone.now().date()
+        BloodUnit.objects.create(
+            blood_bank=self.bank_1,
+            unit_id="BU-EXISTING-001",
+            blood_group="B+",
+            collection_date=today,
+        )
+
+        payload = {
+            "blood_bank": self.bank_1.id,
+            "blood_group": "B+",
+            "collection_date": str(today),
+            "unit_id": "BU-EXISTING-001",
+        }
+        res = self.client.post("/api/blood-units/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("unit_id", res.data)
+
+    def test_34_missing_required_fields_rejected(self):
+        """Test 34: Missing required fields are rejected."""
+        self.client.force_authenticate(user=self.bank_admin_1)
+        # Missing collection_date and blood_group
+        res = self.client.post("/api/blood-units/", {"blood_bank": self.bank_1.id}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("blood_group", res.data)
+        self.assertIn("collection_date", res.data)
+
+
 
 class InventorySummaryAPITest(APITestCase):
     """
@@ -863,3 +927,90 @@ class InventorySummaryAPITest(APITestCase):
         self.client.force_authenticate(user=self.donor_user)
         res = self.client.get("/api/inventory/summary/")
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class BloodUnitStatusContractTests(APITestCase):
+    """
+    Regression test suite verifying canonical BloodUnitStatus choices and contract consistency.
+    """
+
+    def setUp(self):
+        self.super_admin = User.objects.create_superuser(
+            username="super_admin_contract",
+            email="super_contract@test.com",
+            password="Password123!",
+            role=UserRole.SUPER_ADMIN,
+        )
+        self.bank_admin = User.objects.create_user(
+            username="bank_admin_contract",
+            email="bank_contract@test.com",
+            password="Password123!",
+            role=UserRole.BLOOD_BANK_ADMIN,
+        )
+        self.bank = BloodBank.objects.create(
+            name="Contract Test Blood Bank",
+            city="Metropolis",
+            state="Central State",
+            contact_number="+1-555-0199",
+            email="contract@bank.org",
+            capacity=500,
+            admin=self.bank_admin,
+            is_active=True,
+        )
+        self.unit = BloodUnit.objects.create(
+            blood_bank=self.bank,
+            unit_id="BU-CONTRACT-001",
+            blood_group=BloodGroup.O_POSITIVE,
+            collection_date=timezone.now().date(),
+            status=BloodUnitStatus.TESTING,
+        )
+
+    def test_canonical_status_choices_exact(self):
+        """Test: BloodUnitStatus defines strictly the 5 canonical choices."""
+        expected_choices = {"TESTING", "AVAILABLE", "RESERVED", "DISPATCHED", "DISCARDED"}
+        actual_choices = {choice[0] for choice in BloodUnitStatus.choices}
+        self.assertEqual(actual_choices, expected_choices)
+        self.assertNotIn("TRANSFUSED", actual_choices)
+        self.assertNotIn("EXPIRED", actual_choices)
+
+    def test_invalid_status_transfused_rejected_by_api(self):
+        """Test: TRANSFUSED is not a valid BloodUnit status and is rejected by PATCH /api/blood-units/<id>/."""
+        self.client.force_authenticate(user=self.super_admin)
+        res = self.client.patch(
+            f"/api/blood-units/{self.unit.id}/",
+            {"status": "TRANSFUSED"},
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("status", res.data)
+
+    def test_invalid_status_expired_rejected_by_api(self):
+        """Test: EXPIRED is not a valid BloodUnit status choice (expiry is date-derived)."""
+        self.client.force_authenticate(user=self.super_admin)
+        res = self.client.patch(
+            f"/api/blood-units/{self.unit.id}/",
+            {"status": "EXPIRED"},
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("status", res.data)
+
+    def test_initial_creation_always_testing_status(self):
+        """Test: Creating a unit sets status to TESTING."""
+        self.client.force_authenticate(user=self.super_admin)
+        res = self.client.post(
+            "/api/blood-units/",
+            {
+                "blood_bank": self.bank.id,
+                "blood_group": "A+",
+                "collection_date": str(timezone.now().date()),
+            },
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data["status"], "TESTING")
+        self.assertEqual(res.data["status_display"], "Testing")
+
+    def test_status_filter_accepts_all_canonical_statuses(self):
+        """Test: Filtering /api/blood-units/ with each canonical status works correctly."""
+        self.client.force_authenticate(user=self.super_admin)
+        for canonical_status in ["TESTING", "AVAILABLE", "RESERVED", "DISPATCHED", "DISCARDED"]:
+            res = self.client.get(f"/api/blood-units/?status={canonical_status}")
+            self.assertEqual(res.status_code, status.HTTP_200_OK)

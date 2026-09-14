@@ -1,3 +1,4 @@
+from decimal import Decimal
 from django.core.exceptions import ValidationError as DjangoValidationError
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view, OpenApiResponse
@@ -7,15 +8,18 @@ from rest_framework.views import APIView
 
 from apps.accounts.models import UserRole
 from apps.blood_requests.models import BloodRequest
+from apps.blood_requests.permissions import CanManageOrViewBloodRequests
+from .compatibility import calculate_haversine_distance_km
 from .models import SOSBroadcast, SOSRecipient, SOSStatus
 from .permissions import CanManageSOSBroadcast, CanTriggerSOS
 from .serializers import (
     SOSBroadcastSerializer,
     SOSCancelRequestSerializer,
+    SOSDonorPreviewResponseSerializer,
     SOSRecipientSerializer,
     TriggerSOSRequestSerializer,
 )
-from .services import cancel_sos_broadcast, trigger_sos_broadcast
+from .services import cancel_sos_broadcast, find_eligible_compatible_donors, trigger_sos_broadcast
 
 
 @extend_schema(
@@ -69,6 +73,105 @@ class TriggerBloodRequestSOSView(APIView):
 
         output_serializer = SOSBroadcastSerializer(broadcast)
         return Response(output_serializer.data, status=status.HTTP_201_CREATED)
+
+
+@extend_schema(
+    summary="Preview Eligible Donors for Emergency SOS",
+    description="Read-only preview of medically eligible, compatible donors within the specified radius for a blood request before triggering an SOS broadcast.",
+    parameters=[
+        OpenApiParameter("radius_km", float, description="Search radius in kilometers (default 25 km, min 1, max 100)", required=False),
+        OpenApiParameter("radius", float, description="Alias for radius_km", required=False),
+    ],
+    responses={
+        200: SOSDonorPreviewResponseSerializer,
+        400: OpenApiResponse(description="Invalid query parameters or radius"),
+        403: OpenApiResponse(description="Permission denied"),
+        404: OpenApiResponse(description="Blood request not found"),
+    },
+    tags=["Emergency SOS"],
+)
+class BloodRequestSOSPreviewView(APIView):
+    """
+    Read-only preview endpoint to display eligible compatible donors on the SOS map.
+    Does NOT trigger an SOS broadcast, does NOT create records, and does NOT send notifications.
+    """
+    permission_classes = [CanManageSOSBroadcast]
+
+    def get(self, request, pk, *args, **kwargs):
+        try:
+            blood_request = BloodRequest.objects.select_related("blood_bank", "hospital_staff").get(pk=pk)
+        except BloodRequest.DoesNotExist:
+            return Response(
+                {"detail": f"Blood request with ID #{pk} not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        self.check_object_permissions(request, blood_request)
+
+        # Parse radius parameter
+        radius_param = request.query_params.get("radius_km") or request.query_params.get("radius")
+        radius_km = None
+        if radius_param is not None:
+            try:
+                radius_val = float(radius_param)
+                if radius_val <= 0 or radius_val > 100:
+                    return Response(
+                        {"detail": "Radius must be a positive number up to 100 km."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                radius_km = Decimal(str(radius_val))
+            except (ValueError, TypeError):
+                return Response(
+                    {"detail": "Invalid radius parameter."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # Call canonical eligibility & compatibility service
+        eligible_donors = find_eligible_compatible_donors(
+            blood_request=blood_request,
+            radius_km=radius_km,
+        )
+
+        bank = blood_request.blood_bank
+        bank_lat = bank.latitude
+        bank_lng = bank.longitude
+
+        donors_results = []
+        for donor in eligible_donors:
+            dist = None
+            if bank_lat is not None and bank_lng is not None and donor.latitude is not None and donor.longitude is not None:
+                raw_dist = calculate_haversine_distance_km(bank_lat, bank_lng, donor.latitude, donor.longitude)
+                if raw_dist is not None:
+                    dist = round(float(raw_dist), 2)
+
+            fuzzed_lat = round(float(donor.latitude), 2) if donor.latitude is not None else None
+            fuzzed_lng = round(float(donor.longitude), 2) if donor.longitude is not None else None
+
+            donors_results.append({
+                "id": f"DONOR-{donor.id}",
+                "donor_id": donor.id,
+                "blood_group": donor.blood_group,
+                "is_eligible": True,
+                "distance_km": dist,
+                "approximate_latitude": fuzzed_lat,
+                "approximate_longitude": fuzzed_lng,
+            })
+
+        # Sort by distance (closest first), fallback to donor id
+        donors_results.sort(key=lambda x: (x["distance_km"] if x["distance_km"] is not None else 9999, x["donor_id"]))
+
+        response_data = {
+            "blood_request_id": blood_request.id,
+            "blood_group_requested": blood_request.blood_group,
+            "units_needed": blood_request.units_needed,
+            "radius_km": float(radius_km) if radius_km is not None else None,
+            "center_latitude": float(bank_lat) if bank_lat is not None else None,
+            "center_longitude": float(bank_lng) if bank_lng is not None else None,
+            "eligible_donors_count": len(donors_results),
+            "donors": donors_results,
+        }
+
+        return Response(response_data, status=status.HTTP_200_OK)
 
 
 @extend_schema_view(
@@ -244,4 +347,6 @@ class SOSBroadcastRecipientsListView(generics.ListAPIView):
             return SOSRecipient.objects.none()
 
         self.check_object_permissions(self.request, broadcast)
-        return SOSRecipient.objects.filter(sos_broadcast=broadcast).select_related("donor", "user", "notification").order_by("-created_at")
+        return SOSRecipient.objects.filter(sos_broadcast=broadcast).select_related(
+            "donor", "user", "notification", "sos_broadcast__blood_request__blood_bank"
+        ).order_by("-created_at")

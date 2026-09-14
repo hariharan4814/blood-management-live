@@ -57,14 +57,14 @@ function LoginPage() {
     <AuthLayout title="Sign in" description="Access your role-based dashboard.">
       <form onSubmit={onSubmit} className="space-y-5">
         <div className="space-y-2">
-          <Label htmlFor="email">Email or username</Label>
+          <Label htmlFor="email">Email</Label>
           <Input
             id="email"
-            type="text"
-            autoComplete="username"
+            type="email"
+            autoComplete="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@hospital.health or username"
+            placeholder="you@hospital.health"
             disabled={loading}
             required
           />

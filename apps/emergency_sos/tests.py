@@ -627,3 +627,296 @@ class SOSCancellationTests(EmergencySOSTestsBase):
         donor_usernames = [r["donor_username"] for r in results]
         self.assertIn("donor_one_oneg", donor_usernames)
         self.assertIn("donor_two_apos", donor_usernames)
+        for r in results:
+            self.assertIn("distance_km", r)
+            self.assertIsNotNone(r["distance_km"])
+            self.assertIsInstance(r["distance_km"], float)
+            self.assertGreater(r["distance_km"], 0)
+
+    def test_sos_blood_request_detail_exposes_facility_coordinates(self):
+        """Test: SOS broadcast blood_request_detail includes facility coordinates and address."""
+        self.blood_bank.latitude = Decimal("13.082700")
+        self.blood_bank.longitude = Decimal("80.270700")
+        self.blood_bank.address = "456 Central Blood Bank Way"
+        self.blood_bank.city = "Metropolis"
+        self.blood_bank.save()
+
+        self.client.force_authenticate(user=self.super_admin)
+        response = self.client.get(f"/api/sos/{self.broadcast.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        detail = response.data.get("blood_request_detail", {})
+        self.assertEqual(detail.get("blood_bank_name"), self.blood_bank.name)
+        self.assertEqual(detail.get("blood_bank_latitude"), "13.082700")
+        self.assertEqual(detail.get("blood_bank_longitude"), "80.270700")
+        self.assertEqual(detail.get("blood_bank_address"), "456 Central Blood Bank Way")
+        self.assertEqual(detail.get("blood_bank_city"), "Metropolis")
+
+
+class SOSDonorPreviewAPITests(EmergencySOSTestsBase):
+    """
+    Unit and integration tests for read-only dynamic donor preview endpoint (Bug #4).
+    """
+
+    def test_01_authorized_hospital_staff_can_preview_donors(self):
+        """Test: Authorized hospital staff who created the request can preview eligible donors."""
+        self.client.force_authenticate(user=self.hospital_staff1)
+        res = self.client.get(f"/api/blood-requests/{self.critical_request.id}/sos/preview/?radius_km=25")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["blood_request_id"], self.critical_request.id)
+        self.assertEqual(res.data["blood_group_requested"], "A+")
+        self.assertEqual(res.data["radius_km"], 25.0)
+        self.assertIn("donors", res.data)
+        self.assertGreaterEqual(res.data["eligible_donors_count"], 1)
+
+        # Inspect donor payload structure
+        first_donor = res.data["donors"][0]
+        self.assertIn("id", first_donor)
+        self.assertIn("donor_id", first_donor)
+        self.assertIn("blood_group", first_donor)
+        self.assertIn("is_eligible", first_donor)
+        self.assertTrue(first_donor["is_eligible"])
+        self.assertIn("distance_km", first_donor)
+        self.assertIn("approximate_latitude", first_donor)
+        self.assertIn("approximate_longitude", first_donor)
+
+    def test_02_super_admin_and_blood_bank_admin_can_preview_donors(self):
+        """Test: Super Admin and assigned Blood Bank Admin can preview eligible donors."""
+        self.client.force_authenticate(user=self.super_admin)
+        res_admin = self.client.get(f"/api/blood-requests/{self.critical_request.id}/sos/preview/?radius_km=50")
+        self.assertEqual(res_admin.status_code, status.HTTP_200_OK)
+
+        self.client.force_authenticate(user=self.bb_admin)
+        res_bank = self.client.get(f"/api/blood-requests/{self.critical_request.id}/sos/preview/?radius_km=50")
+        self.assertEqual(res_bank.status_code, status.HTTP_200_OK)
+
+    def test_03_unauthorized_roles_denied_preview(self):
+        """Test: Other hospital staff, lab tech, donor, and unauthenticated users are rejected."""
+        # Unauthenticated
+        res_unauth = self.client.get(f"/api/blood-requests/{self.critical_request.id}/sos/preview/")
+        self.assertEqual(res_unauth.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        # Different hospital staff
+        self.client.force_authenticate(user=self.hospital_staff2)
+        res_other = self.client.get(f"/api/blood-requests/{self.critical_request.id}/sos/preview/")
+        self.assertEqual(res_other.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Lab Tech
+        self.client.force_authenticate(user=self.lab_tech)
+        res_tech = self.client.get(f"/api/blood-requests/{self.critical_request.id}/sos/preview/")
+        self.assertEqual(res_tech.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Donor
+        self.client.force_authenticate(user=self.donor_user_o_neg)
+        res_donor = self.client.get(f"/api/blood-requests/{self.critical_request.id}/sos/preview/")
+        self.assertEqual(res_donor.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_04_compatibility_and_medical_eligibility_filter(self):
+        """Test: Only compatible and medically eligible donors are returned."""
+        self.client.force_authenticate(user=self.hospital_staff1)
+        res = self.client.get(f"/api/blood-requests/{self.critical_request.id}/sos/preview/?radius_km=100")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        donor_ids = [d["donor_id"] for d in res.data["donors"]]
+
+        # Compatible donors (A+ request receives O- and A+)
+        self.assertIn(self.donor_o_neg.id, donor_ids)
+        self.assertIn(self.donor_a_pos.id, donor_ids)
+
+        # Incompatible donors (B+ cannot donate to A+)
+        self.assertNotIn(self.donor_b_pos.id, donor_ids)
+
+        # Medically ineligible donor (under 90-day cooldown)
+        self.assertNotIn(self.donor_a_pos_ineligible.id, donor_ids)
+
+    def test_05_radius_filtering_behavior(self):
+        """Test: Radius parameter correctly bounds returned donors."""
+        self.client.force_authenticate(user=self.hospital_staff1)
+
+        # 5 km radius includes nearby donors (~1 km, ~2.5 km)
+        res_small = self.client.get(f"/api/blood-requests/{self.critical_request.id}/sos/preview/?radius_km=5")
+        self.assertEqual(res_small.status_code, status.HTTP_200_OK)
+        donor_ids_small = [d["donor_id"] for d in res_small.data["donors"]]
+        self.assertIn(self.donor_o_neg.id, donor_ids_small)
+        self.assertIn(self.donor_a_pos.id, donor_ids_small)
+
+        # Donors further away are not included
+        for d in res_small.data["donors"]:
+            if d["distance_km"] is not None:
+                self.assertLessEqual(d["distance_km"], 5.0)
+
+    def test_06_real_distance_and_fuzzed_coordinates(self):
+        """Test: Distance is real Haversine calculation and coordinates are fuzzed to 2 decimal places."""
+        self.client.force_authenticate(user=self.hospital_staff1)
+        res = self.client.get(f"/api/blood-requests/{self.critical_request.id}/sos/preview/?radius_km=25")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        for d in res.data["donors"]:
+            # Real calculated distance
+            self.assertIsNotNone(d["distance_km"])
+            self.assertIsInstance(d["distance_km"], float)
+            self.assertGreater(d["distance_km"], 0)
+
+            # Fuzzed coordinate check (maximum 2 decimal places)
+            if d["approximate_latitude"] is not None:
+                lat_str = str(d["approximate_latitude"])
+                decimals = len(lat_str.split(".")[1]) if "." in lat_str else 0
+                self.assertLessEqual(decimals, 2)
+
+            # Verify no private PII exposed
+            self.assertNotIn("email", d)
+            self.assertNotIn("phone", d)
+            self.assertNotIn("home_address", d)
+            self.assertNotIn("exact_latitude", d)
+
+    def test_07_preview_is_strictly_read_only(self):
+        """Test: Calling preview never creates broadcasts, recipient records, or email alerts."""
+        mail.outbox.clear()
+        initial_broadcast_count = SOSBroadcast.objects.count()
+        initial_recipient_count = SOSRecipient.objects.count()
+
+        self.client.force_authenticate(user=self.hospital_staff1)
+        res = self.client.get(f"/api/blood-requests/{self.critical_request.id}/sos/preview/?radius_km=25")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        # Check DB and email outbox unchanged
+        self.assertEqual(SOSBroadcast.objects.count(), initial_broadcast_count)
+        self.assertEqual(SOSRecipient.objects.count(), initial_recipient_count)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_08_invalid_radius_and_not_found(self):
+        """Test: Invalid radius values return 400, missing blood request returns 404."""
+        self.client.force_authenticate(user=self.hospital_staff1)
+
+        # Negative radius
+        res_neg = self.client.get(f"/api/blood-requests/{self.critical_request.id}/sos/preview/?radius_km=-10")
+        self.assertEqual(res_neg.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # Radius > 100
+        res_large = self.client.get(f"/api/blood-requests/{self.critical_request.id}/sos/preview/?radius_km=150")
+        self.assertEqual(res_large.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # Non-numeric radius
+        res_abc = self.client.get(f"/api/blood-requests/{self.critical_request.id}/sos/preview/?radius_km=abc")
+        self.assertEqual(res_abc.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # 404 not found
+        res_404 = self.client.get("/api/blood-requests/999999/sos/preview/")
+        self.assertEqual(res_404.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class SOSRecipientRealDistanceTests(EmergencySOSTestsBase):
+    """
+    Test suite verifying real Haversine distance calculation and donor privacy on SOS recipients.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.broadcast = trigger_sos_broadcast(self.critical_request, self.hospital_staff1)
+
+    def test_recipient_distance_is_real_haversine_calculation(self):
+        """Test: Distance in SOS recipient record exactly matches canonical Haversine calculation."""
+        self.client.force_authenticate(user=self.hospital_staff1)
+        res = self.client.get(f"/api/sos/{self.broadcast.id}/recipients/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        results = res.data.get("results", res.data)
+        self.assertEqual(len(results), 2)
+
+        for item in results:
+            self.assertIn("distance_km", item)
+            self.assertIsNotNone(item["distance_km"])
+            self.assertIsInstance(item["distance_km"], float)
+
+            # Determine expected real distance based on donor
+            if item["donor_username"] == self.donor_user_o_neg.username:
+                expected_dist = calculate_haversine_distance_km(
+                    self.blood_bank.latitude,
+                    self.blood_bank.longitude,
+                    self.donor_o_neg.latitude,
+                    self.donor_o_neg.longitude,
+                )
+                self.assertAlmostEqual(item["distance_km"], round(float(expected_dist), 2), places=2)
+            elif item["donor_username"] == self.donor_user_a_pos.username:
+                expected_dist = calculate_haversine_distance_km(
+                    self.blood_bank.latitude,
+                    self.blood_bank.longitude,
+                    self.donor_a_pos.latitude,
+                    self.donor_a_pos.longitude,
+                )
+                self.assertAlmostEqual(item["distance_km"], round(float(expected_dist), 2), places=2)
+
+    def test_recipient_distance_matches_donor_preview_distance(self):
+        """Test: Recipient distance and donor preview distance are identical."""
+        self.client.force_authenticate(user=self.hospital_staff1)
+
+        # 1. Fetch preview distance
+        preview_res = self.client.get(f"/api/blood-requests/{self.critical_request.id}/sos/preview/?radius_km=25")
+        self.assertEqual(preview_res.status_code, status.HTTP_200_OK)
+        preview_map = {d["donor_id"]: d["distance_km"] for d in preview_res.data["donors"]}
+
+        # 2. Fetch recipient distance
+        recip_res = self.client.get(f"/api/sos/{self.broadcast.id}/recipients/")
+        self.assertEqual(recip_res.status_code, status.HTTP_200_OK)
+        recip_list = recip_res.data.get("results", recip_res.data)
+
+        for r in recip_list:
+            donor_id = r["donor"]
+            self.assertIn(donor_id, preview_map)
+            self.assertEqual(r["distance_km"], preview_map[donor_id])
+
+    def test_recipient_distance_handles_null_coordinates_safely(self):
+        """Test: When blood bank or donor coordinates are None, distance_km returns None without error."""
+        # Create a donor with None coordinates
+        no_coord_user = User.objects.create_user(
+            username="donor_no_coords",
+            email="nocoords@example.com",
+            password="StrongPassword123!",
+            role=UserRole.DONOR,
+        )
+        no_coord_donor = Donor.objects.create(
+            user=no_coord_user,
+            blood_group=BloodGroup.A_POSITIVE,
+            date_of_birth=self.today - timedelta(days=25 * 365),
+            weight_kg=Decimal("60.0"),
+            last_donation_date=self.today - timedelta(days=100),
+            latitude=None,
+            longitude=None,
+        )
+        # Create recipient directly
+        recip = SOSRecipient.objects.create(
+            sos_broadcast=self.broadcast,
+            donor=no_coord_donor,
+            user=no_coord_user,
+            email_attempted=False,
+            email_sent=False,
+        )
+
+        self.client.force_authenticate(user=self.hospital_staff1)
+        res = self.client.get(f"/api/sos/{self.broadcast.id}/recipients/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        results = res.data.get("results", res.data)
+        no_coord_result = next((r for r in results if r["id"] == recip.id), None)
+        self.assertIsNotNone(no_coord_result)
+        self.assertIsNone(no_coord_result["distance_km"])
+
+    def test_recipient_serializer_preserves_donor_privacy(self):
+        """Test: Exact donor coordinates, phone numbers, and addresses are NOT exposed in recipient API."""
+        self.client.force_authenticate(user=self.hospital_staff1)
+        res = self.client.get(f"/api/sos/{self.broadcast.id}/recipients/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        results = res.data.get("results", res.data)
+
+        for r in results:
+            self.assertNotIn("latitude", r)
+            self.assertNotIn("longitude", r)
+            self.assertNotIn("phone", r)
+            self.assertNotIn("phone_number", r)
+            self.assertNotIn("address", r)
+            self.assertNotIn("home_address", r)
+            self.assertNotIn("email", r)
+            # Safe fields only
+            self.assertIn("id", r)
+            self.assertIn("sos_broadcast", r)
+            self.assertIn("donor", r)
+            self.assertIn("donor_username", r)
+            self.assertIn("donor_blood_group", r)
+            self.assertIn("distance_km", r)

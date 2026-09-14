@@ -51,6 +51,7 @@ export const BLOOD_GROUPS: BloodGroup[] = [
 ];
 
 export type UnitStatus = "TESTING" | "AVAILABLE" | "RESERVED" | "DISPATCHED" | "DISCARDED";
+export type BloodUnitStatus = UnitStatus;
 export type RequestStatus = "PENDING" | "APPROVED" | "REJECTED" | "DISPATCHED" | "COMPLETED";
 export type Urgency = "NORMAL" | "HIGH" | "CRITICAL";
 export type TestResult = "PASS" | "FAIL" | "PENDING";
@@ -140,7 +141,7 @@ export interface DonationRecord {
   date: string;
   center: string;
   group: BloodGroup;
-  volumeMl: number;
+  volumeMl: number | null;
   status: "COMPLETED" | "DEFERRED";
 }
 

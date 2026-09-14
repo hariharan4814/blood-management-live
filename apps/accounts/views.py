@@ -65,7 +65,8 @@ class UserRegistrationView(generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        user_data = UserSerializer(user).data
+        # Return the new registrant's own submitted details only on this response.
+        user_data = UserSerializer(user, context={"newly_registered_user": user}).data
         return Response(
             {
                 "message": "Registration successful",

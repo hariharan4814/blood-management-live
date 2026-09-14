@@ -141,8 +141,6 @@ class UserProfileSerializer(serializers.ModelSerializer):
             Donor.objects.create(
                 user=user,
                 blood_group=blood_group,
-                date_of_birth=date(2000, 1, 1),
-                weight_kg=Decimal("60.00"),
                 latitude=user.latitude,
                 longitude=user.longitude,
             )

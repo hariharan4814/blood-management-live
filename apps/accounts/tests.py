@@ -1,6 +1,10 @@
+import os
+from io import StringIO
+from unittest.mock import patch
 from django.test import TestCase
 from django.urls import reverse
 from django.contrib.auth import get_user_model
+from django.core.management import call_command, CommandError
 from rest_framework import status
 from rest_framework.test import APIClient
 from apps.accounts.models import UserRole
@@ -354,6 +358,49 @@ class UserManagementAPITests(TestCase):
         self.assertEqual(data["role"], UserRole.LAB_TECHNICIAN)
         self.assertTrue(User.objects.filter(username="new_lab_tech").exists())
 
+    def test_hospital_registration_persists_name_and_hospital_and_allows_email_login(self):
+        """
+        Verifies that hospital registration accepts Hospital Name and Staff Name,
+        persists them to the User model, and enables login via Email + Password without Staff ID.
+        """
+        register_url = reverse("accounts:register")
+        login_url = reverse("accounts:token_obtain_pair")
+        payload = {
+            "name": "Dr. Sarah Connor",
+            "hospital": "City Memorial Hospital",
+            "email": "sarah.connor@citymemorial.org",
+            "password": "SecureHospital123!",
+            "password_confirm": "SecureHospital123!",
+            "role": UserRole.HOSPITAL_STAFF,
+            "phone": "+14155551234",
+        }
+        reg_res = self.client.post(register_url, payload, format="json")
+        self.assertEqual(reg_res.status_code, status.HTTP_201_CREATED)
+        user_data = reg_res.json()["user"]
+        self.assertEqual(user_data["role"], UserRole.HOSPITAL_STAFF)
+        self.assertEqual(user_data["first_name"], "Dr.")
+        self.assertEqual(user_data["last_name"], "Sarah Connor")
+        self.assertEqual(user_data["address"], "City Memorial Hospital")
+
+        # Verify database persistence
+        user_in_db = User.objects.get(email="sarah.connor@citymemorial.org")
+        self.assertEqual(user_in_db.role, UserRole.HOSPITAL_STAFF)
+        self.assertEqual(user_in_db.first_name, "Dr.")
+        self.assertEqual(user_in_db.last_name, "Sarah Connor")
+        self.assertEqual(user_in_db.address, "City Memorial Hospital")
+        self.assertEqual(user_in_db.phone, "+14155551234")
+
+        # Verify login via Email + Password only
+        login_res = self.client.post(
+            login_url,
+            {"username": "sarah.connor@citymemorial.org", "password": "SecureHospital123!"},
+            format="json",
+        )
+        self.assertEqual(login_res.status_code, status.HTTP_200_OK)
+        login_data = login_res.json()
+        self.assertIn("access", login_data)
+        self.assertEqual(login_data["user"]["role"], UserRole.HOSPITAL_STAFF)
+
     def test_non_super_admin_cannot_provision_user(self):
         self.client.force_authenticate(user=self.hospital_staff)
         payload = {
@@ -364,6 +411,86 @@ class UserManagementAPITests(TestCase):
         }
         response = self.client.post(self.users_url, payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+
+class InitAdminCommandTests(TestCase):
+    """
+    Tests for the safe, idempotent initadmin management command.
+    """
+
+    def test_initadmin_fails_when_password_missing(self):
+        out = StringIO()
+        with patch.dict(os.environ, {"ADMIN_PASSWORD": ""}, clear=False):
+            with self.assertRaises(CommandError) as ctx:
+                call_command("initadmin", stdout=out)
+            self.assertIn("ADMIN_PASSWORD environment variable is missing", str(ctx.exception))
+
+    def test_initadmin_creates_new_super_admin(self):
+        out = StringIO()
+        env_vars = {
+            "ADMIN_USERNAME": "Administrator",
+            "ADMIN_EMAIL": "admin@bloodmgmt.org",
+            "ADMIN_PASSWORD": "ProductionSecurePassword123!",
+        }
+        with patch.dict(os.environ, env_vars, clear=False):
+            call_command("initadmin", stdout=out)
+
+        user = User.objects.get(username="Administrator")
+        self.assertEqual(user.email, "admin@bloodmgmt.org")
+        self.assertEqual(user.role, UserRole.SUPER_ADMIN)
+        self.assertTrue(user.is_staff)
+        self.assertTrue(user.is_superuser)
+        self.assertTrue(user.is_verified)
+        self.assertTrue(user.check_password("ProductionSecurePassword123!"))
+        self.assertIn("Successfully initialized SUPER_ADMIN", out.getvalue())
+
+    def test_initadmin_idempotent_existing_super_admin(self):
+        # Create existing Super Admin with known password
+        User.objects.create_superuser(
+            username="Administrator",
+            email="admin@bloodmgmt.org",
+            password="OriginalPassword123!",
+            role=UserRole.SUPER_ADMIN,
+            is_verified=True,
+        )
+
+        out = StringIO()
+        env_vars = {
+            "ADMIN_USERNAME": "Administrator",
+            "ADMIN_EMAIL": "admin@bloodmgmt.org",
+            "ADMIN_PASSWORD": "NewAttemptedPassword123!",
+        }
+        with patch.dict(os.environ, env_vars, clear=False):
+            call_command("initadmin", stdout=out)
+
+        # Confirm password was NOT modified and output reported already exists
+        user = User.objects.get(username="Administrator")
+        self.assertTrue(user.check_password("OriginalPassword123!"))
+        self.assertFalse(user.check_password("NewAttemptedPassword123!"))
+        self.assertIn("already exists as SUPER_ADMIN", out.getvalue())
+
+    def test_initadmin_aborts_on_role_conflict(self):
+        # Existing user is a DONOR, not a SUPER_ADMIN
+        User.objects.create_user(
+            username="Administrator",
+            email="admin@bloodmgmt.org",
+            password="DonorPassword123!",
+            role=UserRole.DONOR,
+        )
+
+        out = StringIO()
+        env_vars = {
+            "ADMIN_USERNAME": "Administrator",
+            "ADMIN_EMAIL": "admin@bloodmgmt.org",
+            "ADMIN_PASSWORD": "AttemptedPassword123!",
+        }
+        with patch.dict(os.environ, env_vars, clear=False):
+            with self.assertRaises(CommandError) as ctx:
+                call_command("initadmin", stdout=out)
+            self.assertIn("already exists with role", str(ctx.exception))
+
+
 
 
 class HospitalRegistrationAndLoginTests(TestCase):

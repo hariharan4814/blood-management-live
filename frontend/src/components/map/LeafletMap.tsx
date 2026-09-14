@@ -7,11 +7,12 @@ export interface MapMarkerItem {
   title: string;
   latitude: number;
   longitude: number;
-  distanceKm?: number | undefined;
+  distanceKm?: number | null | undefined;
   badge?: string | undefined;
   details?: {
     bloodGroup?: string | undefined;
     isEligible?: boolean | undefined;
+    isActive?: boolean | undefined;
     beds?: number | undefined;
     capacity?: number | undefined;
     address?: string | undefined;
@@ -38,6 +39,12 @@ interface LeafletMapProps {
 
 const DEFAULT_CENTER: [number, number] = [13.0827, 80.2707]; // Chennai default
 
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[character]!);
+}
+
 export function LeafletMap({
   center = DEFAULT_CENTER,
   zoom = 13,
@@ -56,6 +63,7 @@ export function LeafletMap({
   const pickerMarkerRef = useRef<any>(null);
   const circleLayerRef = useRef<any>(null);
   const [isClient, setIsClient] = useState<boolean>(false);
+  const [mapReady, setMapReady] = useState(false);
 
   useEffect(() => {
     setIsClient(true);
@@ -92,6 +100,7 @@ export function LeafletMap({
       const markersLayer = L.layerGroup().addTo(map);
       mapRef.current = map;
       markersLayerRef.current = markersLayer;
+      setMapReady(true);
 
       // Click to pick location
       if (isPicker && onPositionChange) {
@@ -166,7 +175,7 @@ export function LeafletMap({
         }
       }
     });
-  }, [isClient, selectedPosition, isPicker]);
+  }, [isClient, mapReady, selectedPosition, isPicker]);
 
   // Handle Search Radius Circle
   useEffect(() => {
@@ -193,7 +202,7 @@ export function LeafletMap({
         circleLayerRef.current = circle;
       }
     });
-  }, [isClient, radiusKm, center]);
+  }, [isClient, mapReady, radiusKm, center]);
 
   // Render Markers
   useEffect(() => {
@@ -250,14 +259,35 @@ export function LeafletMap({
             ? `<span class="font-semibold text-primary ml-1">· ${m.distanceKm} km away</span>`
             : "";
 
+        const statusBadge =
+          typeof m.details?.isActive === "boolean"
+            ? m.details.isActive
+              ? `<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">Active</span>`
+              : `<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-200 text-slate-700 border border-slate-300">Inactive</span>`
+            : "";
+
+        const donorExtraHtml =
+          m.type === "donor"
+            ? `<div class="flex items-center gap-1.5 mt-1">
+                 ${m.details?.bloodGroup ? `<span class="text-[11px] font-extrabold text-rose-600 bg-rose-50 border border-rose-200 px-1 py-0.2 rounded">${escapeHtml(m.details.bloodGroup)}</span>` : ""}
+                 ${
+                   m.details?.isEligible !== undefined
+                     ? m.details.isEligible
+                       ? `<span class="text-[10px] font-medium text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-200">Eligible</span>`
+                       : `<span class="text-[10px] font-medium text-amber-700 bg-amber-50 px-1 py-0.2 rounded border border-amber-200">Not eligible</span>`
+                     : ""
+                 }
+               </div>`
+            : "";
+
         const detailsHtml = m.details?.address
-          ? `<p class="text-xs text-slate-500 mt-1">${m.details.address}</p>`
+          ? `<p class="text-xs text-slate-500 mt-1">${escapeHtml(m.details.address)}</p>`
           : m.details?.city
-            ? `<p class="text-xs text-slate-500 mt-1">${m.details.city}</p>`
+            ? `<p class="text-xs text-slate-500 mt-1">${escapeHtml(m.details.city)}</p>`
             : "";
 
         const contactHtml = m.details?.contactNumber
-          ? `<p class="text-xs text-slate-600 mt-1 font-mono">📞 ${m.details.contactNumber}</p>`
+          ? `<p class="text-xs text-slate-600 mt-1 font-mono">📞 ${escapeHtml(m.details.contactNumber)}</p>`
           : "";
 
         const ratingHtml =
@@ -271,10 +301,14 @@ export function LeafletMap({
         const popupContent = `
           <div class="p-1 max-w-[240px]">
             <div class="flex items-center justify-between gap-2 mb-1">
-              ${typeBadge}
+              <div class="flex items-center gap-1">
+                ${typeBadge}
+                ${statusBadge}
+              </div>
               ${distInfo ? `<span class="text-xs text-indigo-700 font-bold bg-indigo-50 px-1.5 py-0.5 rounded">${m.distanceKm} km</span>` : ""}
             </div>
-            <h4 class="font-bold text-sm text-slate-900 leading-tight">${m.title}</h4>
+            <h4 class="font-bold text-sm text-slate-900 leading-tight">${escapeHtml(m.title)}</h4>
+            ${donorExtraHtml}
             ${ratingHtml}
             ${detailsHtml}
             ${contactHtml}
@@ -299,14 +333,14 @@ export function LeafletMap({
         target.openPopup();
       }
     });
-  }, [isClient, markers, radiusKm, focusedMarkerId]);
+  }, [isClient, mapReady, markers, radiusKm, focusedMarkerId]);
 
   // Center change
   useEffect(() => {
     if (mapRef.current && center && !isPicker) {
       mapRef.current.setView(center, mapRef.current.getZoom());
     }
-  }, [center]);
+  }, [center, mapReady]);
 
   if (!isClient) {
     return (

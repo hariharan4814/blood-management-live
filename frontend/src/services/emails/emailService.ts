@@ -9,11 +9,19 @@ export interface EmailStatus {
   use_tls: boolean;
 }
 
+export type EmailRecipientType =
+  | "ADMIN"
+  | "BLOOD_BANK"
+  | "HOSPITAL"
+  | "STAFF"
+  | "GENERAL"
+  | "EMERGENCY_DESK";
+
 export interface ManagedRecipient {
   id: number;
   email: string;
   name: string;
-  recipient_type: "DONOR" | "HOSPITAL_STAFF" | "BLOOD_BANK_ADMIN" | "SYSTEM_ADMIN" | "EXTERNAL_EMERGENCY";
+  recipient_type: EmailRecipientType;
   recipient_type_display: string;
   is_active: boolean;
   created_by_username?: string;

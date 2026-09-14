@@ -9,7 +9,8 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.accounts.models import UserRole
-from apps.donors.models import Donor, BloodGroup
+from apps.donors.models import Donor, BloodGroup, DonorContactRequest, ContactRequestStatus
+from apps.notifications.models import Notification
 from apps.donors.services import calculate_donor_eligibility
 
 User = get_user_model()
@@ -599,3 +600,239 @@ class DonorContactConsentTests(TestCase):
         res_bank = self.client.get(self.contact_details_url)
         self.assertEqual(res_bank.status_code, status.HTTP_403_FORBIDDEN)
 
+
+class DonorContactAccessAPITests(TestCase):
+    """
+    Comprehensive tests for privacy-preserving nearby donor discovery and contact access workflow.
+    """
+    def setUp(self):
+        self.client = APIClient()
+        self.today = timezone.now().date()
+
+        # Donor 1 (Target Donor)
+        self.donor_user = User.objects.create_user(
+            username="target_donor",
+            email="target_donor@example.com",
+            first_name="Jane",
+            last_name="Doe",
+            password="SecurePassword123!",
+            role=UserRole.DONOR,
+            phone="+919876543210",
+            is_verified=True,
+        )
+        self.donor_profile = Donor.objects.create(
+            user=self.donor_user,
+            blood_group=BloodGroup.O_POSITIVE,
+            date_of_birth=self.today - timedelta(days=25 * 365),
+            weight_kg=Decimal("65.00"),
+            latitude=Decimal("13.082700"),
+            longitude=Decimal("80.270700"),
+        )
+
+        # Donor 2 (Other Donor)
+        self.other_donor_user = User.objects.create_user(
+            username="other_donor",
+            email="other_donor@example.com",
+            password="SecurePassword123!",
+            role=UserRole.DONOR,
+            phone="+919876543211",
+            is_verified=True,
+        )
+        self.other_donor_profile = Donor.objects.create(
+            user=self.other_donor_user,
+            blood_group=BloodGroup.A_POSITIVE,
+            date_of_birth=self.today - timedelta(days=28 * 365),
+            weight_kg=Decimal("70.00"),
+            latitude=Decimal("13.085000"),
+            longitude=Decimal("80.275000"),
+        )
+
+        # Hospital Staff User
+        self.hospital_staff = User.objects.create_user(
+            username="city_hospital_staff",
+            email="staff@cityhospital.org",
+            first_name="Dr. Alan",
+            last_name="Grant",
+            password="SecurePassword123!",
+            role=UserRole.HOSPITAL_STAFF,
+            phone="+919876543299",
+            is_verified=True,
+        )
+
+        # Super Admin User
+        self.super_admin = User.objects.create_user(
+            username="system_superadmin",
+            email="admin@bloodmgmt.org",
+            password="SecurePassword123!",
+            role=UserRole.SUPER_ADMIN,
+            is_verified=True,
+        )
+
+        self.contact_req_url = reverse("donors:donor_contact_request_list_create")
+        self.nearby_url = reverse("common:nearby_search")
+
+    def test_nearby_donor_limited_info_and_no_private_exposure(self):
+        """
+        Verifies that nearby donor results only expose limited fields and omit phone, email, full names, exact coords.
+        """
+        self.client.force_authenticate(user=self.hospital_staff)
+        res = self.client.get(f"{self.nearby_url}?lat=13.0827&lng=80.2707&radius=10&type=donors")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        donors = res.json()["results"]["donors"]
+        self.assertTrue(len(donors) >= 1)
+
+        d1 = donors[0]
+        self.assertIn("donor_id", d1)
+        self.assertIn("blood_group", d1)
+        self.assertIn("is_eligible", d1)
+        self.assertIn("distance_km", d1)
+        self.assertIn("approximate_latitude", d1)
+        self.assertIn("approximate_longitude", d1)
+
+        # Ensure NO sensitive fields are leaked in nearby search
+        self.assertNotIn("phone", d1)
+        self.assertNotIn("email", d1)
+        self.assertNotIn("first_name", d1)
+        self.assertNotIn("last_name", d1)
+        self.assertNotIn("password", d1)
+        self.assertNotIn("address", d1)
+
+    def test_hospital_can_create_contact_request(self):
+        """
+        Hospital staff creates a contact request and donor receives an in-app notification.
+        """
+        self.client.force_authenticate(user=self.hospital_staff)
+        payload = {
+            "donor_id": self.donor_profile.id,
+            "hospital_name": "City General Hospital",
+            "blood_group": "O+",
+            "urgency": "HIGH",
+            "message": "Urgent requirement for trauma surgery patient.",
+        }
+        res = self.client.post(self.contact_req_url, payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        data = res.json()
+        self.assertEqual(data["status"], "PENDING")
+        self.assertEqual(data["donor_id"], self.donor_profile.id)
+        self.assertEqual(data["hospital_name"], "City General Hospital")
+        self.assertIsNone(data["contact_details"])  # Must be None when PENDING
+
+        # Verify donor received in-app notification
+        notifications = Notification.objects.filter(recipient=self.donor_user)
+        self.assertTrue(notifications.exists())
+        self.assertIn("Contact", notifications.first().title)
+
+    def test_non_hospital_user_cannot_create_contact_request(self):
+        """
+        Donors or unprivileged users cannot request contact access.
+        """
+        self.client.force_authenticate(user=self.other_donor_user)
+        payload = {
+            "donor_id": self.donor_profile.id,
+            "hospital_name": "Unauthorized Clinic",
+        }
+        res = self.client.post(self.contact_req_url, payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_unauthenticated_request_rejected(self):
+        """
+        Unauthenticated requests are strictly rejected with 401.
+        """
+        res = self.client.post(self.contact_req_url, {"donor_id": self.donor_profile.id}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_duplicate_pending_request_is_prevented(self):
+        """
+        Prevents multiple pending requests to the same donor by the same hospital staff.
+        """
+        self.client.force_authenticate(user=self.hospital_staff)
+        payload = {
+            "donor_id": self.donor_profile.id,
+            "hospital_name": "City General Hospital",
+        }
+        # First request succeeds
+        res1 = self.client.post(self.contact_req_url, payload, format="json")
+        self.assertEqual(res1.status_code, status.HTTP_201_CREATED)
+
+        # Second identical pending request fails
+        res2 = self.client.post(self.contact_req_url, payload, format="json")
+        self.assertEqual(res2.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("pending contact request", res2.json()["detail"])
+
+    def test_donor_can_approve_contact_request(self):
+        """
+        Target donor approves request. Requester receives notification and can access contact details.
+        """
+        # Create request as hospital staff
+        req_obj = DonorContactRequest.objects.create(
+            donor=self.donor_profile,
+            requester=self.hospital_staff,
+            hospital_name="City General Hospital",
+            blood_group="O+",
+            status=ContactRequestStatus.PENDING,
+        )
+
+        # Approve as target donor
+        self.client.force_authenticate(user=self.donor_user)
+        respond_url = reverse("donors:donor_contact_request_respond", kwargs={"pk": req_obj.id})
+        res = self.client.post(respond_url, {"action": "APPROVE"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.json()["status"], "APPROVED")
+
+        # Check notification sent to hospital staff
+        staff_notifs = Notification.objects.filter(recipient=self.hospital_staff)
+        self.assertTrue(staff_notifs.exists())
+        self.assertIn("Approved", staff_notifs.first().title)
+
+        # Hospital checks request detail and sees phone & email
+        self.client.force_authenticate(user=self.hospital_staff)
+        detail_url = reverse("donors:donor_contact_request_detail", kwargs={"pk": req_obj.id})
+        res_detail = self.client.get(detail_url)
+        self.assertEqual(res_detail.status_code, status.HTTP_200_OK)
+        details = res_detail.json()["contact_details"]
+        self.assertIsNotNone(details)
+        self.assertEqual(details["phone"], "+919876543210")
+        self.assertEqual(details["email"], "target_donor@example.com")
+        self.assertEqual(details["name"], "Jane Doe")
+
+    def test_donor_can_decline_contact_request(self):
+        """
+        Target donor declines request. Hospital does NOT receive contact details.
+        """
+        req_obj = DonorContactRequest.objects.create(
+            donor=self.donor_profile,
+            requester=self.hospital_staff,
+            hospital_name="City General Hospital",
+            blood_group="O+",
+            status=ContactRequestStatus.PENDING,
+        )
+
+        self.client.force_authenticate(user=self.donor_user)
+        respond_url = reverse("donors:donor_contact_request_respond", kwargs={"pk": req_obj.id})
+        res = self.client.post(respond_url, {"action": "DECLINE"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.json()["status"], "DECLINED")
+
+        # Hospital checks request detail and contact_details is None
+        self.client.force_authenticate(user=self.hospital_staff)
+        detail_url = reverse("donors:donor_contact_request_detail", kwargs={"pk": req_obj.id})
+        res_detail = self.client.get(detail_url)
+        self.assertEqual(res_detail.status_code, status.HTTP_200_OK)
+        self.assertIsNone(res_detail.json()["contact_details"])
+
+    def test_donor_cannot_approve_request_for_another_donor(self):
+        """
+        Donor B cannot respond to a request intended for Donor A.
+        """
+        req_obj = DonorContactRequest.objects.create(
+            donor=self.donor_profile,
+            requester=self.hospital_staff,
+            hospital_name="City General Hospital",
+            status=ContactRequestStatus.PENDING,
+        )
+
+        # Other donor attempts to approve
+        self.client.force_authenticate(user=self.other_donor_user)
+        respond_url = reverse("donors:donor_contact_request_respond", kwargs={"pk": req_obj.id})
+        res = self.client.post(respond_url, {"action": "APPROVE"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)

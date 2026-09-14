@@ -13,6 +13,14 @@ class ReviewUserBriefSerializer(serializers.Serializer):
     full_name = serializers.CharField(read_only=True)
     role = serializers.CharField(read_only=True)
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.role == UserRole.DONOR:
+            from apps.donors.privacy import public_username
+            data["username"] = public_username(instance)
+            data["full_name"] = public_username(instance)
+        return data
+
 
 class ReviewSerializer(serializers.ModelSerializer):
     reviewer = ReviewUserBriefSerializer(read_only=True)

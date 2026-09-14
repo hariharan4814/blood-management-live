@@ -48,9 +48,13 @@ def check_inventory_shortage(blood_request: BloodRequest) -> Tuple[bool, int, in
     return has_shortage, available_count, shortage_count
 
 
+from datetime import date
+
+
 def find_eligible_compatible_donors(
     blood_request: BloodRequest,
     radius_km: Optional[Decimal] = None,
+    reference_date: Optional[date] = None,
 ) -> List[Donor]:
     """
     Finds all active donors who:
@@ -83,6 +87,7 @@ def find_eligible_compatible_donors(
             date_of_birth=donor.date_of_birth,
             weight_kg=donor.weight_kg,
             last_donation_date=donor.last_donation_date,
+            reference_date=reference_date,
         )
         if not eligibility.get("is_eligible", False):
             continue
